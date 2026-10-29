@@ -59,12 +59,6 @@ class Configs(BaseSettings):
     PAGE_SIZE: ClassVar[int] = 20
     ORDERING: ClassVar[str] = "-id"
 
-    # Gemini
-    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY") or os.getenv("GEMINI-KEY", "")
-    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL") or os.getenv(
-        "GEMINI-MODEL", "gemini-1.5-flash"
-    )
-
     model_config = {"case_sensitive": True}
 
     @model_validator(mode="after")

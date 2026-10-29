@@ -1,7 +1,6 @@
 from contextlib import AbstractContextManager
 from typing import Callable
 
-from requests import session
 from sqlalchemy.orm import Session
 
 from app.core.exceptions_handler import NotFoundError

@@ -34,6 +34,16 @@ Base FastAPI project for applying general RestAPI Application cases.
    2. raw WAS(Web Application Server)
 
 ## commands
+Install runtime dependencies with `python -m pip install -r requirements.txt`.
+For development and tests, use `python -m pip install -r requirements-dev.txt`.
+
+The backend no longer includes invoice image processing, OCR, or Gemini.
+`POST /api/v1/invoice/process-image` has been removed. Authentication, CRUD,
+invoice creation, and MinIO logo uploads remain available.
+
+Use a fresh virtual environment to reclaim space from previously installed OCR
+packages; installing the reduced requirements does not uninstall old packages.
+
 1. db(alembic)
    1. `alembic upgrade head`: apply every migrations
    2. `alembic downgrade base`: rollback every migrations

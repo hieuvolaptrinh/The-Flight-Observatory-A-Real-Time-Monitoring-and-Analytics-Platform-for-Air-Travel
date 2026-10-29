@@ -1,0 +1,6 @@
+-r requirements.txt
+
+# Testing (not needed to run the API)
+httpx==0.28.1
+pytest
+pytest-cov

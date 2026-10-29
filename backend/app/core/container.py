@@ -57,8 +57,3 @@ class Container(containers.DeclarativeContainer):
     invoice_service = providers.Factory(
         InvoiceService, invoice_repository=invoice_repository
     )
-
-    # invoice
-    image_processor_service = providers.Factory(ImageProcessorService)
-    orc_service = providers.Singleton(OrcService) #singleton để khởi tạo 1 lần đỡ tốn resource
-    gemini_service = providers.Factory(GeminiService)
