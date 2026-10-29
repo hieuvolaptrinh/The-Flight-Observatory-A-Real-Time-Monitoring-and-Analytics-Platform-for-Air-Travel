@@ -1,0 +1,70 @@
+name: flight-delay-backend
+
+x-worker: &worker
+  restart: unless-stopped
+  init: true
+  expose:
+    - "8000"
+  networks:
+    - backend
+
+services:
+  gateway:
+    build: ./gateway
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${GATEWAY_PORT:-8080}:8080"
+    environment:
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:3000}
+    depends_on:
+      analytics:
+        condition: service_healthy
+      clustering:
+        condition: service_healthy
+      prediction:
+        condition: service_healthy
+      ingestion:
+        condition: service_healthy
+    networks:
+      - backend
+
+  analytics:
+    <<: *worker
+    build: ./analytics
+    environment:
+      SERVICE_NAME: analytics
+      ROOT_PATH: /api/analytics
+      SCHEDULER_ENABLED: "${ANALYTICS_SCHEDULER_ENABLED:-false}"
+      JOB_INTERVAL_SECONDS: "${ANALYTICS_INTERVAL_SECONDS:-300}"
+
+  clustering:
+    <<: *worker
+    build: ./clustering
+    environment:
+      SERVICE_NAME: clustering
+      ROOT_PATH: /api/clustering
+      SCHEDULER_ENABLED: "${CLUSTERING_SCHEDULER_ENABLED:-false}"
+      JOB_INTERVAL_SECONDS: "${CLUSTERING_INTERVAL_SECONDS:-86400}"
+
+  prediction:
+    <<: *worker
+    build: ./prediction
+    environment:
+      SERVICE_NAME: prediction
+      ROOT_PATH: /api/prediction
+      SCHEDULER_ENABLED: "${PREDICTION_SCHEDULER_ENABLED:-false}"
+      JOB_INTERVAL_SECONDS: "${PREDICTION_INTERVAL_SECONDS:-300}"
+
+  ingestion:
+    <<: *worker
+    build: ./ingestion
+    environment:
+      SERVICE_NAME: ingestion
+      ROOT_PATH: /api/ingestion
+      SCHEDULER_ENABLED: "${INGESTION_SCHEDULER_ENABLED:-false}"
+      JOB_INTERVAL_SECONDS: "${INGESTION_INTERVAL_SECONDS:-300}"
+      SIMULATOR_BASE_URL: "${SIMULATOR_BASE_URL:-}"
+
+networks:
+  backend:
+    driver: bridge

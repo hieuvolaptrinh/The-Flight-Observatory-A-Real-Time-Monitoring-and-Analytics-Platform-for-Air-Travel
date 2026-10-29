@@ -1,28 +1,5 @@
-# Web API
-fastapi==0.141.1
-uvicorn
-python-multipart
-
-# Configuration
-python-dotenv
-pydantic-settings
-
-# Dependency injection
-dependency-injector
-
-# Database and migrations
-sqlmodel==0.0.39
-sqlalchemy==2.0.52
-alembic==1.19.1
-psycopg2-binary
-email-validator>=2.0
-
-# Logo uploads
-minio>=7.2,<8
-
-# Authentication
-python-jose[cryptography]
-bcrypt
-
-# Logging
-loguru
+# Runtime dependencies for the four independently deployable Python services.
+-r analytics/requirements.txt
+-r clustering/requirements.txt
+-r prediction/requirements.txt
+-r ingestion/requirements.txt
