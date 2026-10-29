@@ -1,0 +1,71 @@
+
+# Web API
+
+fastapi==0.141.1
+uvicorn[standard]
+python-multipart
+
+
+# Image Processing
+
+# numpy 1.26.4 bắt buộc — opencv 4.6.0.66 (yêu cầu của paddleocr 2.7.3) compile với numpy 1.x ABI
+# KHÔNG nâng numpy lên 2.x vì sẽ gây lỗi: numpy.core.multiarray failed to import
+numpy==1.26.4
+opencv-python==4.6.0.66
+opencv-contrib-python==4.6.0.66
+pillow
+
+
+# OCR
+# paddlepaddle 2.6.2 + paddleocr 2.7.3 — phiên bản stable, không bị lỗi oneDNN trên Windows
+# KHÔNG nâng lên 3.x vì PaddlePaddle 3.x có bug oneDNN trên Windows
+
+paddlepaddle==2.6.2
+paddleocr==2.7.3
+
+
+# Environment
+
+python-dotenv
+
+
+# HTTP / Gemini
+
+httpx==0.28.1
+
+
+# Dependency Injection
+
+dependency-injector
+
+
+# Database
+
+sqlmodel==0.0.39
+sqlalchemy==2.0.52
+alembic==1.19.1
+email-validator>=2.0
+minio>=7.2,<8
+
+# PostgreSQL driver used by SQLAlchemy (`postgresql+psycopg2://...`)
+psycopg2-binary
+
+
+# Authentication
+
+python-jose[cryptography]
+bcrypt
+
+
+# Utils
+
+pytz
+loguru
+
+
+pytest
+pytest-cov
+
+pydantic-settings
+
+google-genai
