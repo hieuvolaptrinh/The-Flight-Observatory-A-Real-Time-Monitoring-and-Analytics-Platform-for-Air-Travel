@@ -139,3 +139,8 @@ dmypy.json
 
 # IDE - VSCode
 .vscode/*
+
+# Local SQLite database files
+*.db
+*.db-journal
+*/data/*.db
