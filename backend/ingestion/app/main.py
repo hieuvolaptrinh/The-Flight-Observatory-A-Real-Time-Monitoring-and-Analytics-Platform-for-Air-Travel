@@ -67,7 +67,8 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
         dest: str | None = Query(default=None, description="Filter by destination airport IATA code"),
         carrier: str | None = Query(default=None, description="Filter by carrier code (e.g. AA, DL, UA, WN)"),
         status: str | None = Query(default=None, description="Filter by delay_status: on_time, moderate_delay, severe_delay"),
-        search: str | None = Query(default=None, description="Search by flight code, airport, or tail number"),
+        search: str | None = Query(default=None, description="Search by flight code, airport, carrier, or tail number"),
+        sort: str | None = Query(default="time", description="Sort by: time, delay, distance"),
         limit: int = Query(default=200, ge=1, le=1000, description="Max records to return"),
         offset: int = Query(default=0, ge=0, description="Pagination offset"),
     ):
@@ -78,6 +79,7 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
             carrier=carrier,
             status=status,
             search=search,
+            sort=sort,
             limit=limit,
             offset=offset,
         )

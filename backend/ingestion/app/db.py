@@ -197,10 +197,11 @@ class FlightRepository:
         carrier: str | None = None,
         status: str | None = None,
         search: str | None = None,
+        sort: str | None = "time",
         limit: int = 200,
         offset: int = 0,
     ) -> dict[str, Any]:
-        """Query flights from DB with optional filters and aggregate KPIs."""
+        """Query flights from DB with server-side filters, search, sorting, pagination, and KPIs."""
         where_clauses: list[str] = []
         params: list[Any] = []
         ph = "%s" if self.is_postgres else "?"
@@ -221,16 +222,25 @@ class FlightRepository:
             q = f"%{search.strip().upper()}%"
             where_clauses.append(
                 f"(UPPER(flight_code) LIKE {ph} OR UPPER(origin) LIKE {ph} "
-                f"OR UPPER(dest) LIKE {ph} OR UPPER(COALESCE(tail_num, '')) LIKE {ph})"
+                f"OR UPPER(dest) LIKE {ph} OR UPPER(COALESCE(tail_num, '')) LIKE {ph} "
+                f"OR UPPER(COALESCE(carrier_name, '')) LIKE {ph})"
             )
-            params.extend([q, q, q, q])
+            params.extend([q, q, q, q, q])
 
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+
+        sort_key = (sort or "time").strip().lower()
+        if sort_key == "delay":
+            order_by = "delay_minutes DESC, crs_dep_time ASC"
+        elif sort_key == "distance":
+            order_by = "distance DESC, crs_dep_time ASC"
+        else:
+            order_by = "crs_dep_time ASC, ingested_at DESC"
 
         items_sql = f"""
             SELECT * FROM ingested_flights
             {where_sql}
-            ORDER BY ingested_at DESC, crs_dep_time ASC
+            ORDER BY {order_by}
             LIMIT {ph} OFFSET {ph}
         """
         stats_sql = f"""
@@ -246,6 +256,17 @@ class FlightRepository:
                 MAX(ingested_at) AS latest_ingested_at
             FROM ingested_flights
             {where_sql}
+        """
+        carrier_stats_sql = f"""
+            SELECT
+                op_unique_carrier AS code,
+                AVG(delay_minutes) AS avg_delay,
+                COUNT(*) AS flight_count
+            FROM ingested_flights
+            {where_sql}
+            GROUP BY op_unique_carrier
+            ORDER BY flight_count DESC, op_unique_carrier ASC
+            LIMIT 8
         """
         total_sql = "SELECT COUNT(*) AS total_stored FROM ingested_flights"
         last_batch_sql = "SELECT * FROM ingestion_batches ORDER BY created_at DESC LIMIT 1"
@@ -263,6 +284,8 @@ class FlightRepository:
                     total_stored = int(cur.fetchone()["total_stored"])
                     cur.execute(stats_sql, params)
                     stats_row = dict(cur.fetchone() or {})
+                    cur.execute(carrier_stats_sql, params)
+                    carrier_rows = [dict(r) for r in cur.fetchall()]
                     cur.execute(items_sql, [*params, limit, offset])
                     items = [dict(r) for r in cur.fetchall()]
                     cur.execute(last_batch_sql)
@@ -277,10 +300,12 @@ class FlightRepository:
         else:
             with self._connect_sqlite() as conn:
                 cur = conn.cursor()
-                cur.execute(total_stored_sql := total_sql)
+                cur.execute(total_sql)
                 total_stored = int(cur.fetchone()["total_stored"])
                 cur.execute(stats_sql, params)
                 stats_row = dict(cur.fetchone() or {})
+                cur.execute(carrier_stats_sql, params)
+                carrier_rows = [dict(r) for r in cur.fetchall()]
                 cur.execute(items_sql, [*params, limit, offset])
                 items = [dict(r) for r in cur.fetchall()]
                 cur.execute(last_batch_sql)
@@ -309,6 +334,7 @@ class FlightRepository:
             "returned_count": len(items),
             "limit": limit,
             "offset": offset,
+            "sort": sort_key,
             "delayed_count": delayed_count,
             "on_time_count": int(stats_row.get("on_time_count") or 0),
             "moderate_delay_count": int(stats_row.get("moderate_delay_count") or 0),
@@ -317,6 +343,14 @@ class FlightRepository:
             "avg_delay_minutes": round(float(stats_row.get("avg_delay_minutes") or 0.0), 1),
             "avg_distance": round(float(stats_row.get("avg_distance") or 0.0), 1),
             "avg_elapsed_time": round(float(stats_row.get("avg_elapsed_time") or 0.0), 1),
+            "carrier_delays": [
+                {
+                    "code": r["code"],
+                    "avg_delay": round(float(r.get("avg_delay") or 0.0), 1),
+                    "flight_count": int(r.get("flight_count") or 0),
+                }
+                for r in carrier_rows
+            ],
             "last_batch": last_batch_dict,
             "available_filters": {
                 "origins": origins,

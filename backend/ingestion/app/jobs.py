@@ -29,6 +29,7 @@ class JobRunner:
         carrier: str | None = None,
         status: str | None = None,
         search: str | None = None,
+        sort: str | None = "time",
         limit: int = 200,
         offset: int = 0,
     ) -> Results:
@@ -38,6 +39,7 @@ class JobRunner:
             carrier=carrier,
             status=status,
             search=search,
+            sort=sort,
             limit=limit,
             offset=offset,
         )

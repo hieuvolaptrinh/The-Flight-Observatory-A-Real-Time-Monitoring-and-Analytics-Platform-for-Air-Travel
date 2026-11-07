@@ -69,6 +69,33 @@ const CARRIER_MAP: Record<string, string> = {
   OO: "SkyWest Airlines",
 };
 
+interface ServerFlightMeta {
+  total_stored: number;
+  filtered_count: number;
+  returned_count: number;
+  limit: number;
+  offset: number;
+  delayed_count: number;
+  on_time_count: number;
+  moderate_delay_count: number;
+  severe_delay_count: number;
+  delay_rate_pct: number;
+  avg_delay_minutes: number;
+  avg_distance: number;
+  carrier_delays: { code: string; avg_delay: number; flight_count: number }[];
+  available_filters: {
+    origins: string[];
+    destinations: string[];
+    carriers: string[];
+  };
+  last_batch?: {
+    window_start?: number;
+    window_end?: number;
+    inserted_count?: number;
+    duplicate_count?: number;
+  } | null;
+}
+
 function normalizeSimulatorRecord(raw: Record<string, unknown>, fetchedAt: string, idx: number): FlightItem {
   const flDate = String(raw.FL_DATE || "2025-01-06");
   const carrier = String(raw.OP_UNIQUE_CARRIER || "AA").toUpperCase();
@@ -81,7 +108,6 @@ function normalizeSimulatorRecord(raw: Record<string, unknown>, fetchedAt: strin
   const crsArr = `${arrRaw.slice(0, 2)}:${arrRaw.slice(2, 4)}`;
   const flightKey = `${flDate}_${carrier}_${flNum}_${origin}_${dest}_${depRaw}`;
 
-  // Hash tất định để ước lượng delay khi đọc thẳng từ Simulator
   let hash = 0;
   for (let i = 0; i < flightKey.length; i++) {
     hash = (hash * 31 + flightKey.charCodeAt(i)) >>> 0;
@@ -134,6 +160,7 @@ export default function Dashboard({ view }: { view: "overview" | "flights" | "fo
   const [risk,setRisk] = useState("all");
   const [flightStatus,setFlightStatus] = useState("all");
   const [search,setSearch] = useState("");
+  const [debouncedSearch,setDebouncedSearch] = useState("");
   const [sort,setSort] = useState("time");
   const [currentPage,setCurrentPage] = useState(1);
   const [pageSize,setPageSize] = useState(15);
@@ -143,6 +170,7 @@ export default function Dashboard({ view }: { view: "overview" | "flights" | "fo
 
   // State cho trang Danh sách chuyến bay (FE · Chuyến bay - STT 15)
   const [liveFlights, setLiveFlights] = useState<FlightItem[] | null>(null);
+  const [serverMeta, setServerMeta] = useState<ServerFlightMeta | null>(null);
   const [apiReady, setApiReady] = useState<boolean | null>(null);
   const [apiMode, setApiMode] = useState<"gateway" | "ingestion" | "simulator" | "demo">("demo");
   const [batchMeta, setBatchMeta] = useState<{
@@ -155,12 +183,40 @@ export default function Dashboard({ view }: { view: "overview" | "flights" | "fo
 
   function notify(message: string) { setToast(message); setTimeout(() => setToast(""),4000); }
 
+  // Debounce 250ms cho ô tìm kiếm để tránh spam request khi gõ phím liên tục
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(search);
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [search]);
+
+  // Reset về trang 1 khi thay đổi bất kỳ bộ lọc hoặc từ khóa tìm kiếm nào
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [airport, destAirport, carrier, flightStatus, debouncedSearch, sort, pageSize]);
+
   const fetchIngestionFlights = useCallback(async (silent = false) => {
     setBusy(true);
+
+    // Xây dựng Query String đẩy toàn bộ Search, Filter, Sort, Pagination xuống Backend SQL
+    const params = new URLSearchParams({
+      limit: String(pageSize),
+      offset: String((currentPage - 1) * pageSize),
+      sort,
+    });
+    if (airport !== "all") params.set("origin", airport);
+    if (destAirport !== "all") params.set("dest", destAirport);
+    if (carrier !== "all") params.set("carrier", carrier);
+    if (flightStatus !== "all") params.set("status", flightStatus);
+    if (debouncedSearch.trim()) params.set("search", debouncedSearch.trim());
+
+    const qs = params.toString();
     const ingestionCandidates = [
-      ...DIRECT_INGESTION_URLS.map(u => ({ mode: "ingestion" as const, url: `${u}/flights?limit=500` })),
-      { mode: "gateway" as const, url: `${API_BASE}/ingestion/flights?limit=500` },
+      ...DIRECT_INGESTION_URLS.map(u => ({ mode: "ingestion" as const, url: `${u}/flights?${qs}` })),
+      { mode: "gateway" as const, url: `${API_BASE}/ingestion/flights?${qs}` },
     ];
+
     for (const candidate of ingestionCandidates) {
       try {
         const res = await fetch(candidate.url, { cache: "no-store" });
@@ -169,8 +225,9 @@ export default function Dashboard({ view }: { view: "overview" | "flights" | "fo
         setApiMode(candidate.mode);
         setApiReady(Boolean(json.ready));
         const items: FlightItem[] = json?.output?.items || [];
-        const meta = json?.output?.metadata || {};
+        const meta: ServerFlightMeta = json?.output?.metadata || {};
         setLiveFlights(items);
+        setServerMeta(meta);
         setBatchMeta({
           total_stored: meta.total_stored ?? items.length,
           window_start: meta.last_batch?.window_start,
@@ -183,7 +240,11 @@ export default function Dashboard({ view }: { view: "overview" | "flights" | "fo
         }
         setBusy(false);
         if (!silent) {
-          notify(json.ready ? `Đã tải ${items.length} chuyến bay từ DB Ingestion.` : "DB đang trống (ready: false). Hãy nhấn 'Thu thập batch mới'!");
+          notify(
+            json.ready
+              ? `Truy vấn Server-side: ${items.length}/${meta.filtered_count ?? items.length} chuyến bay (Trang ${currentPage}).`
+              : "DB đang trống (ready: false). Hãy nhấn 'Thu thập batch mới'!"
+          );
         }
         return;
       } catch {
@@ -191,7 +252,7 @@ export default function Dashboard({ view }: { view: "overview" | "flights" | "fo
       }
     }
 
-    // Nếu service Ingestion (8004) chưa bật nhưng Data Simulator (8000) đang bật, lấy trực tiếp từ Simulator!
+    // Fallback: Nếu service Ingestion (8004) chưa bật nhưng Data Simulator (8000) đang bật
     for (const simBase of DIRECT_SIMULATOR_URLS) {
       try {
         const res = await fetch(`${simBase}/flights`, { cache: "no-store" });
@@ -215,6 +276,7 @@ export default function Dashboard({ view }: { view: "overview" | "flights" | "fo
           });
           return merged;
         });
+        setServerMeta(null);
         setApiMode("simulator");
         setApiReady(true);
         setUpdated(fetchedAt.replace("T", " ").replace("Z", " UTC"));
@@ -228,13 +290,14 @@ export default function Dashboard({ view }: { view: "overview" | "flights" | "fo
       }
     }
 
+    setServerMeta(null);
     setApiMode("demo");
     setApiReady(null);
     setBusy(false);
     if (!silent) {
       notify("Đang hiển thị dữ liệu mẫu (hãy bật port 8004 hoặc 8000 để lấy API thật).");
     }
-  }, []);
+  }, [airport, destAirport, carrier, flightStatus, debouncedSearch, sort, currentPage, pageSize]);
 
   async function triggerIngestionRun() {
     setBusy(true);
@@ -255,10 +318,10 @@ export default function Dashboard({ view }: { view: "overview" | "flights" | "fo
       }
     }
 
-    // Fallback sang Simulator (port 8000) nếu bạn chỉ mới bật port 8000 mà chưa bật port 8004
     await fetchIngestionFlights(false);
   }
 
+  // Tự động gọi API tới Backend mỗi khi bộ lọc, từ khóa tìm kiếm, cách sắp xếp hoặc trang hiện tại thay đổi
   useEffect(() => {
     if (isFlights) {
       fetchIngestionFlights(true);
@@ -281,24 +344,33 @@ export default function Dashboard({ view }: { view: "overview" | "flights" | "fo
   const meanProbability = scoped.length ? scoped.reduce((s,p) => s+p.probability,0)/scoped.length : 0;
 
   // Dữ liệu cho trang Danh sách Chuyến bay (FE · Chuyến bay - STT 15)
-  const activeFlightSource: FlightItem[] = apiMode !== "demo" && liveFlights !== null ? liveFlights : demoFlights;
-  const uniqueOrigins = Array.from(new Set(activeFlightSource.map(f => f.origin))).sort();
-  const uniqueDests = Array.from(new Set(activeFlightSource.map(f => f.dest))).sort();
-  const uniqueCarriers = Array.from(new Set(activeFlightSource.map(f => f.op_unique_carrier))).sort();
+  // Khi kết nối Backend Ingestion/Gateway: 100% Search, Filter, Sort & Pagination do SQL xử lý (isServerSide = true)
+  const isServerSide = (apiMode === "ingestion" || apiMode === "gateway") && serverMeta !== null;
+  const fallbackFlightSource: FlightItem[] = apiMode === "simulator" && liveFlights !== null ? liveFlights : demoFlights;
 
-  const scopedFlights = activeFlightSource.filter(
+  const uniqueOrigins = isServerSide
+    ? serverMeta.available_filters?.origins || []
+    : Array.from(new Set(fallbackFlightSource.map(f => f.origin))).sort();
+  const uniqueDests = isServerSide
+    ? serverMeta.available_filters?.destinations || []
+    : Array.from(new Set(fallbackFlightSource.map(f => f.dest))).sort();
+  const uniqueCarriers = isServerSide
+    ? serverMeta.available_filters?.carriers || []
+    : Array.from(new Set(fallbackFlightSource.map(f => f.op_unique_carrier))).sort();
+
+  const clientScopedFlights = fallbackFlightSource.filter(
     f =>
       (airport === "all" || f.origin === airport) &&
       (destAirport === "all" || f.dest === destAirport) &&
       (carrier === "all" || f.op_unique_carrier === carrier)
   );
-  const filteredFlights = scopedFlights
+  const clientFilteredFlights = clientScopedFlights
     .filter(
       f =>
         (flightStatus === "all" || f.delay_status === flightStatus) &&
         `${f.flight_code} ${f.origin} ${f.dest} ${f.tail_num || ""} ${f.carrier_name}`
           .toLowerCase()
-          .includes(search.toLowerCase())
+          .includes(debouncedSearch.toLowerCase())
     )
     .sort((a, b) =>
       sort === "delay"
@@ -308,14 +380,15 @@ export default function Dashboard({ view }: { view: "overview" | "flights" | "fo
           : a.crs_dep_time.localeCompare(b.crs_dep_time)
     );
 
-  useEffect(() => {
-    setCurrentPage(1);
-  }, [airport, destAirport, carrier, flightStatus, search, sort, pageSize]);
-
-  const totalPages = Math.max(1, Math.ceil(filteredFlights.length / pageSize));
+  const totalFilteredCount = isServerSide ? serverMeta.filtered_count : clientFilteredFlights.length;
+  const totalPages = Math.max(1, Math.ceil(totalFilteredCount / pageSize));
   const safePage = Math.min(currentPage, totalPages);
   const startIndex = (safePage - 1) * pageSize;
-  const paginatedFlights = filteredFlights.slice(startIndex, startIndex + pageSize);
+
+  // Nếu Server-side: liveFlights chính là các dòng của trang hiện tại từ SQL LIMIT/OFFSET
+  const paginatedFlights: FlightItem[] = isServerSide
+    ? liveFlights || []
+    : clientFilteredFlights.slice(startIndex, startIndex + pageSize);
 
   const pageNumbers = (() => {
     const pages: (number | "...")[] = [];
@@ -333,15 +406,47 @@ export default function Dashboard({ view }: { view: "overview" | "flights" | "fo
     return pages;
   })();
 
-  const flightsDelayedCount = scopedFlights.filter(f => f.is_delayed === 1 || f.delay_minutes >= 15).length;
-  const flightsOnTimeCount = scopedFlights.length - flightsDelayedCount;
-  const flightsDelayRate = scopedFlights.length ? (flightsDelayedCount / scopedFlights.length) * 100 : 0;
-  const flightsAvgDelay = scopedFlights.length
-    ? scopedFlights.reduce((s, f) => s + f.delay_minutes, 0) / scopedFlights.length
-    : 0;
-  const flightsAvgDistance = scopedFlights.length
-    ? scopedFlights.reduce((s, f) => s + f.distance, 0) / scopedFlights.length
-    : 0;
+  const flightsDelayedCount = isServerSide
+    ? serverMeta.delayed_count
+    : clientScopedFlights.filter(f => f.is_delayed === 1 || f.delay_minutes >= 15).length;
+  const flightsOnTimeCount = isServerSide
+    ? serverMeta.on_time_count
+    : clientScopedFlights.length - flightsDelayedCount;
+  const flightsDelayRate = isServerSide
+    ? serverMeta.delay_rate_pct
+    : clientScopedFlights.length
+      ? (flightsDelayedCount / clientScopedFlights.length) * 100
+      : 0;
+  const flightsAvgDelay = isServerSide
+    ? serverMeta.avg_delay_minutes
+    : clientScopedFlights.length
+      ? clientScopedFlights.reduce((s, f) => s + f.delay_minutes, 0) / clientScopedFlights.length
+      : 0;
+  const flightsAvgDistance = isServerSide
+    ? serverMeta.avg_distance
+    : clientScopedFlights.length
+      ? clientScopedFlights.reduce((s, f) => s + f.distance, 0) / clientScopedFlights.length
+      : 0;
+
+  const statusCounts: Record<FlightItem["delay_status"], number> = isServerSide
+    ? {
+        on_time: serverMeta.on_time_count,
+        moderate_delay: serverMeta.moderate_delay_count,
+        severe_delay: serverMeta.severe_delay_count,
+      }
+    : {
+        on_time: clientScopedFlights.filter(f => f.delay_status === "on_time").length,
+        moderate_delay: clientScopedFlights.filter(f => f.delay_status === "moderate_delay").length,
+        severe_delay: clientScopedFlights.filter(f => f.delay_status === "severe_delay").length,
+      };
+
+  const carrierDelayBars = isServerSide && serverMeta.carrier_delays?.length
+    ? serverMeta.carrier_delays
+    : (uniqueCarriers.length ? uniqueCarriers.slice(0, 8) : ["AA", "DL", "UA", "WN"]).map(code => {
+        const rows = clientScopedFlights.filter(f => f.op_unique_carrier === code);
+        const avgDelay = rows.length ? rows.reduce((s, f) => s + f.delay_minutes, 0) / rows.length : 0;
+        return { code, avg_delay: avgDelay, flight_count: rows.length };
+      });
 
   function refresh() {
     if (isFlights) {
@@ -353,10 +458,11 @@ export default function Dashboard({ view }: { view: "overview" | "flights" | "fo
   }
 
   function exportCsv() {
+    const exportSource = isServerSide ? paginatedFlights : clientFilteredFlights;
     const rows = isFlights
       ? [
           ["flight_code", "fl_date", "carrier", "tail_num", "origin", "dest", "crs_dep_time", "crs_arr_time", "distance_miles", "delay_minutes", "delay_status"],
-          ...filteredFlights.map(f => [f.flight_code, f.fl_date, f.op_unique_carrier, f.tail_num || "", f.origin, f.dest, f.crs_dep_time, f.crs_arr_time, f.distance, f.delay_minutes, statusLabels[f.delay_status]]),
+          ...exportSource.map(f => [f.flight_code, f.fl_date, f.op_unique_carrier, f.tail_num || "", f.origin, f.dest, f.crs_dep_time, f.crs_arr_time, f.distance, f.delay_minutes, statusLabels[f.delay_status]]),
         ]
       : forecast
         ? [["flight","origin","destination","departure_local","forecast_date","delay_minutes","delay_probability_percent","risk"],...filtered.map(p => [p.flight,p.origin,p.destination,p.time,"2026-11-07",p.delay,p.probability,riskLabels[riskOf(p.probability)]])]
@@ -368,7 +474,7 @@ export default function Dashboard({ view }: { view: "overview" | "flights" | "fo
   const pageTitle = isFlights ? "Danh sách chuyến bay" : forecast ? "Dự báo ngày mai" : "Tổng quan chuyến bay";
   const pageEyebrow = isFlights ? "GIÁM SÁT LUỒNG CHUYẾN BAY · INGESTION" : forecast ? "NHÌN TRƯỚC MỘT BƯỚC" : "BỨC TRANH TOÀN CẢNH";
   const pageSubtitle = isFlights
-    ? "Tra cứu, tìm kiếm và lọc trạng thái chuyến bay thời gian thực từ luồng Data Simulator."
+    ? "Tra cứu, tìm kiếm, lọc và phân trang trực tiếp trên Database (Server-side SQL Query) từ luồng Data Simulator."
     : forecast
       ? "Biến dữ liệu hôm nay thành sự chủ động cho ngày mai."
       : "Mọi chuyển động trên bầu trời, trong một góc nhìn.";
@@ -391,7 +497,7 @@ export default function Dashboard({ view }: { view: "overview" | "flights" | "fo
       </nav>
       <div className="sidebar-bottom"><div className="sidebar-card"><span className="orbit-icon"><Icon name="chart" size={25} /></span><strong>Mỗi chuyến bay,<br />một góc nhìn rõ hơn.</strong><p>Theo dõi hôm nay.<br />Chủ động cho ngày mai.</p><span className="sidebar-card-line" /></div><div className="demo-status"><span className="status-dot" />{apiMode !== "demo" ? `API: ${apiMode.toUpperCase()}` : "Chế độ demo UI"}<span>v1.0</span></div><div className="profile"><span className="avatar">V</span><div>Việt · Flight Team<small>Flight Delay Project</small></div><span className="profile-badge">VN</span></div></div>
     </aside>
-    <div className="main-shell"><header className="topbar"><div className="breadcrumbs">Workspace<span>/</span><strong>{pageTitle}</strong></div><div className="topbar-right"><span className="sample-pill">{isFlights && apiMode !== "demo" ? `KẾT NỐI: ${apiMode.toUpperCase()}` : "DỮ LIỆU MẪU"}</span><span className="header-divider" /><Icon name="globe" size={17} /><span>Tiếng Việt</span><span className="mini-avatar">V</span></div></header>
+    <div className="main-shell"><header className="topbar"><div className="breadcrumbs">Workspace<span>/</span><strong>{pageTitle}</strong></div><div className="topbar-right"><span className="sample-pill">{isFlights && apiMode !== "demo" ? `KẾT NỐI: ${apiMode.toUpperCase()} (${isServerSide ? "SERVER-SIDE SQL" : "MEMORY"})` : "DỮ LIỆU MẪU"}</span><span className="header-divider" /><Icon name="globe" size={17} /><span>Tiếng Việt</span><span className="mini-avatar">V</span></div></header>
       <main className="main-content">
         <div className="page-heading">
           <div>
@@ -491,8 +597,8 @@ export default function Dashboard({ view }: { view: "overview" | "flights" | "fo
 
           <section className="metrics" aria-label="Chỉ số chuyến bay">
             <Metric
-              title="Tổng chuyến bay hiển thị"
-              value={number(scopedFlights.length)}
+              title="Tổng chuyến bay khớp lọc"
+              value={number(totalFilteredCount)}
               unit="chuyến"
               icon="plane"
               note={batchMeta?.total_stored ? `Tổng lưu trong DB: ${number(batchMeta.total_stored)} chuyến` : "Theo bộ lọc sân bay & hãng hiện tại"}
@@ -502,7 +608,7 @@ export default function Dashboard({ view }: { view: "overview" | "flights" | "fo
               value={number(flightsOnTimeCount)}
               unit="chuyến"
               icon="check"
-              note={`Chiếm ${(100 - flightsDelayRate).toFixed(1)}% tổng số chuyến`}
+              note={`Chiếm ${(totalFilteredCount ? 100 - flightsDelayRate : 0).toFixed(1)}% tổng số chuyến`}
               color="teal"
             />
             <Metric
@@ -528,21 +634,20 @@ export default function Dashboard({ view }: { view: "overview" | "flights" | "fo
               <div className="panel-heading">
                 <div>
                   <h2>Mức độ trễ trung bình theo hãng hàng không</h2>
-                  <p>Tổng hợp trực tiếp từ danh sách chuyến bay đang lọc</p>
+                  <p>Tổng hợp bằng câu lệnh GROUP BY trực tiếp từ Database theo bộ lọc</p>
                 </div>
                 <span className="chart-unit">ĐƠN VỊ: PHÚT</span>
               </div>
               <div className="airport-bars">
-                {(uniqueCarriers.length ? uniqueCarriers.slice(0, 8) : ["AA", "DL", "UA", "WN"]).map(code => {
-                  const rows = scopedFlights.filter(f => f.op_unique_carrier === code);
-                  const val = rows.length ? rows.reduce((s, f) => s + f.delay_minutes, 0) / rows.length : 0;
+                {carrierDelayBars.map(bar => {
+                  const val = bar.avg_delay || 0;
                   return (
-                    <div className="airport-bar" key={code}>
-                      <span className="airport-bar-value">{rows.length ? val.toFixed(1) : "—"}</span>
+                    <div className="airport-bar" key={bar.code}>
+                      <span className="airport-bar-value">{bar.flight_count ? val.toFixed(1) : "—"}</span>
                       <div className="airport-bar-track">
                         <div style={{ height: `${Math.min(100, (val / 45) * 100)}%` }} className={val >= 20 ? "bar-coral" : "bar-teal"} />
                       </div>
-                      <strong>{code}</strong>
+                      <strong>{bar.code}</strong>
                     </div>
                   );
                 })}
@@ -559,7 +664,7 @@ export default function Dashboard({ view }: { view: "overview" | "flights" | "fo
               </div>
               <div className="risk-distribution">
                 {(["on_time", "moderate_delay", "severe_delay"] as const).map(st => {
-                  const count = scopedFlights.filter(f => f.delay_status === st).length;
+                  const count = statusCounts[st] || 0;
                   const badge = statusBadgeClass[st];
                   return (
                     <button
@@ -584,7 +689,7 @@ export default function Dashboard({ view }: { view: "overview" | "flights" | "fo
                       <strong>{count}<small>chuyến</small></strong>
                       <span
                         className={`risk-mini-bar ${badge}`}
-                        style={{ width: `${scopedFlights.length ? (count / scopedFlights.length) * 100 : 0}%` }}
+                        style={{ width: `${totalFilteredCount ? (count / totalFilteredCount) * 100 : 0}%` }}
                       />
                     </button>
                   );
@@ -597,8 +702,8 @@ export default function Dashboard({ view }: { view: "overview" | "flights" | "fo
           <section className="panel predictions-panel">
             <div className="panel-heading">
               <div>
-                <h2>Danh sách chi tiết chuyến bay <span className="count-pill">{filteredFlights.length}</span></h2>
-                <p>Tìm kiếm theo mã chuyến bay, số hiệu tàu bay (Tail Num), sân bay đi/đến hoặc lọc theo trạng thái trễ</p>
+                <h2>Danh sách chi tiết chuyến bay <span className="count-pill">{totalFilteredCount}</span></h2>
+                <p>Tìm kiếm, lọc và sắp xếp Server-side qua SQL (chỉ tải {pageSize} dòng mỗi trang từ Backend)</p>
               </div>
               <div className="table-tools">
                 <label className="search-box">
@@ -686,7 +791,7 @@ export default function Dashboard({ view }: { view: "overview" | "flights" | "fo
                 </tbody>
               </table>
 
-              {!filteredFlights.length && (
+              {!paginatedFlights.length && (
                 <div className="empty-state">
                   <Icon name="search" size={30} />
                   <h3>Không có chuyến bay phù hợp</h3>
@@ -715,9 +820,9 @@ export default function Dashboard({ view }: { view: "overview" | "flights" | "fo
               <div>
                 Hiển thị{" "}
                 <strong>
-                  {filteredFlights.length ? startIndex + 1 : 0}–{Math.min(startIndex + pageSize, filteredFlights.length)}
+                  {totalFilteredCount ? startIndex + 1 : 0}–{Math.min(startIndex + paginatedFlights.length, totalFilteredCount)}
                 </strong>{" "}
-                trên tổng số <strong>{filteredFlights.length}</strong> chuyến bay (Trang {safePage}/{totalPages})
+                trên tổng số <strong>{totalFilteredCount}</strong> chuyến bay (Trang {safePage}/{totalPages} · {isServerSide ? "Server-side SQL" : "Client fallback"})
               </div>
 
               <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
