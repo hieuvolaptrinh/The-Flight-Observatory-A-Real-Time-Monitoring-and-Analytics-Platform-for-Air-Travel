@@ -7,9 +7,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /service
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt \
-    && useradd --create-home --uid 10001 appuser
+    && useradd --create-home --uid 10001 appuser \
+    && mkdir -p /service/data /service/models \
+    && chown -R appuser:appuser /service
 
 COPY --chown=appuser:appuser app ./app
+COPY --chown=appuser:appuser models ./models
 USER appuser
 
 EXPOSE 8000

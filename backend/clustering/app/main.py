@@ -1,13 +1,16 @@
 import asyncio
 from contextlib import asynccontextmanager, suppress
 import logging
+from typing import Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import Settings
 from app.jobs import JobAlreadyRunning, JobRunner
 from app.pipeline import Pipeline
 from app.schemas import Job, Results
+from app.train import train_and_save_model
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
@@ -17,7 +20,8 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        runner = JobRunner(settings.service_name, pipeline if pipeline is not None else Pipeline())
+        active_pipeline = pipeline if pipeline is not None else Pipeline(settings=settings)
+        runner = JobRunner(settings.service_name, active_pipeline)
         app.state.runner = runner
         task = (
             asyncio.create_task(runner.schedule(settings.job_interval_seconds))
@@ -32,26 +36,68 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
                     await task
 
     app = FastAPI(
-        title=settings.service_name,
-        description="Flight delay service scaffold. No database or production pipeline is configured.",
-        version="0.1.0",
+        title="Flight Clustering Service",
+        description="Clusters US airports and flight routes with KMeans + PCA, persists centroids & cluster labels to DB.",
+        version="1.0.0",
         root_path=settings.root_path,
         lifespan=lifespan,
     )
 
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
     @app.get("/health", tags=["operations"])
     async def health():
+        runner: JobRunner = app.state.runner
         return {
-            "status": "ok", "service": settings.service_name,
+            "status": "ok",
+            "service": settings.service_name,
             "scheduler_enabled": settings.scheduler_enabled,
             "job_interval_seconds": settings.job_interval_seconds,
-            "storage": "memory",
+            "storage": runner.pipeline.repository.storage_type,
+            "model_path": settings.model_path,
         }
 
     @app.get("/results", response_model=Results, tags=["results"])
     @app.get("/clusters", response_model=Results, tags=["results"])
-    async def results():
-        return app.state.runner.results
+    async def results(
+        entity_type: Literal["airport", "route"] = Query(
+            default="airport",
+            description="Select clustered entities: 'airport' (default) or 'route'",
+        ),
+        cluster_id: int | None = Query(
+            default=None,
+            ge=0,
+            le=9,
+            description="Optional filter by semantic cluster_id (0..3)",
+        ),
+    ):
+        runner: JobRunner = app.state.runner
+        return runner.get_results(entity_type=entity_type, cluster_id=cluster_id)
+
+    @app.delete("/clusters", tags=["operations"])
+    async def clear_clusters():
+        """Delete clustering results from DB (Demo step: clear DB -> Web shows missing -> POST /run recovers without training)."""
+        runner: JobRunner = app.state.runner
+        deleted = runner.pipeline.repository.clear_all()
+        return {"status": "cleared", "deleted_records": deleted}
+
+    @app.post("/train", tags=["operations"])
+    async def train_model():
+        """Explicitly re-train and save the KMeans + PCA model bundle to disk."""
+        bundle = await asyncio.to_thread(train_and_save_model, settings)
+        return {
+            "status": "trained",
+            "model_version": bundle["model_version"],
+            "n_clusters": bundle["n_clusters"],
+            "silhouette_score": bundle["silhouette_score"],
+            "training_airports_count": bundle["training_airports_count"],
+            "trained_at": bundle["trained_at"],
+        }
 
     @app.get("/jobs/latest", response_model=Job | None, tags=["operations"])
     async def latest_job():
@@ -69,7 +115,7 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
                 detail=app.state.runner.latest.model_dump(mode="json"),
             ) from exc
         except Exception as exc:
-            raise HTTPException(status_code=500, detail="Pipeline failed; see service logs.") from exc
+            raise HTTPException(status_code=500, detail=f"Pipeline failed: {exc}") from exc
 
     return app
 

@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from app.pipeline import Pipeline
-from app.schemas import Job, Results
+from app.schemas import Job, PipelineOutput, Results
 
 logger = logging.getLogger(__name__)
 
@@ -20,8 +20,43 @@ class JobRunner:
         self.service = service
         self.pipeline = pipeline
         self.latest: Job | None = None
-        self.results = Results(service=service)
         self._lock = asyncio.Lock()
+
+    def get_results(
+        self,
+        origin: str | None = None,
+        dest: str | None = None,
+        carrier: str | None = None,
+        status: str | None = None,
+        search: str | None = None,
+        sort: str | None = "time",
+        limit: int = 200,
+        offset: int = 0,
+    ) -> Results:
+        queried = self.pipeline.repository.query_flights(
+            origin=origin,
+            dest=dest,
+            carrier=carrier,
+            status=status,
+            search=search,
+            sort=sort,
+            limit=limit,
+            offset=offset,
+        )
+        return Results(
+            service=self.service,
+            storage=self.pipeline.repository.storage_type,
+            ready=queried["ready"],
+            updated_at=queried["updated_at"],
+            output=PipelineOutput(
+                items=queried["items"],
+                metadata=queried["metadata"],
+            ),
+        )
+
+    @property
+    def results(self) -> Results:
+        return self.get_results()
 
     async def run_once(self, trigger: str = "manual") -> Job:
         if self._lock.locked():
@@ -34,21 +69,15 @@ class JobRunner:
             self.latest = job
             logger.info("Job started: service=%s id=%s trigger=%s", self.service, job.id, trigger)
             try:
-                output = await self.pipeline.run()
-                finished_at = datetime.now(timezone.utc)
-                # Publish only a complete result; preserve the last good result on failure.
-                self.results = Results(
-                    service=self.service, ready=True,
-                    updated_at=finished_at, output=output,
-                )
+                await self.pipeline.run()
                 job.status = "completed"
             except NotImplementedError as exc:
                 job.status = "not_implemented"
                 job.error = str(exc)
                 raise
-            except Exception:
+            except Exception as exc:
                 job.status = "failed"
-                job.error = "Pipeline failed; see service logs."
+                job.error = str(exc)
                 logger.exception("Job failed: service=%s id=%s", self.service, job.id)
                 raise
             finally:
@@ -57,7 +86,6 @@ class JobRunner:
             return job
 
     async def schedule(self, interval_seconds: float) -> None:
-        # First run happens after one interval; each next interval follows completion.
         while True:
             await asyncio.sleep(interval_seconds)
             try:
@@ -67,5 +95,4 @@ class JobRunner:
             except NotImplementedError:
                 logger.warning("Pipeline is not implemented: service=%s", self.service)
             except Exception:
-                # run_once logs the failure; keep the scheduler alive for the next run.
                 continue
