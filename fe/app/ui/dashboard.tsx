@@ -135,6 +135,8 @@ export default function Dashboard({ view }: { view: "overview" | "flights" | "fo
   const [flightStatus,setFlightStatus] = useState("all");
   const [search,setSearch] = useState("");
   const [sort,setSort] = useState("time");
+  const [currentPage,setCurrentPage] = useState(1);
+  const [pageSize,setPageSize] = useState(15);
   const [updated,setUpdated] = useState("14:35 · 06/11/2026 UTC");
   const [toast,setToast] = useState("");
   const [busy,setBusy] = useState(false);
@@ -305,6 +307,31 @@ export default function Dashboard({ view }: { view: "overview" | "flights" | "fo
           ? b.distance - a.distance
           : a.crs_dep_time.localeCompare(b.crs_dep_time)
     );
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [airport, destAirport, carrier, flightStatus, search, sort, pageSize]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredFlights.length / pageSize));
+  const safePage = Math.min(currentPage, totalPages);
+  const startIndex = (safePage - 1) * pageSize;
+  const paginatedFlights = filteredFlights.slice(startIndex, startIndex + pageSize);
+
+  const pageNumbers = (() => {
+    const pages: (number | "...")[] = [];
+    if (totalPages <= 7) {
+      for (let i = 1; i <= totalPages; i++) pages.push(i);
+    } else {
+      pages.push(1);
+      if (safePage > 3) pages.push("...");
+      const start = Math.max(2, safePage - 1);
+      const end = Math.min(totalPages - 1, safePage + 1);
+      for (let i = start; i <= end; i++) pages.push(i);
+      if (safePage < totalPages - 2) pages.push("...");
+      pages.push(totalPages);
+    }
+    return pages;
+  })();
 
   const flightsDelayedCount = scopedFlights.filter(f => f.is_delayed === 1 || f.delay_minutes >= 15).length;
   const flightsOnTimeCount = scopedFlights.length - flightsDelayedCount;
@@ -594,6 +621,12 @@ export default function Dashboard({ view }: { view: "overview" | "flights" | "fo
                   <option value="delay">Độ trễ giảm dần</option>
                   <option value="distance">Cự ly giảm dần</option>
                 </select>
+                <select aria-label="Số dòng mỗi trang" value={pageSize} onChange={e => setPageSize(Number(e.target.value))}>
+                  <option value={10}>10 dòng / trang</option>
+                  <option value={15}>15 dòng / trang</option>
+                  <option value={25}>25 dòng / trang</option>
+                  <option value={50}>50 dòng / trang</option>
+                </select>
               </div>
             </div>
 
@@ -612,7 +645,7 @@ export default function Dashboard({ view }: { view: "overview" | "flights" | "fo
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredFlights.map(f => {
+                  {paginatedFlights.map(f => {
                     const badge = statusBadgeClass[f.delay_status];
                     return (
                       <tr key={f.flight_key}>
@@ -678,13 +711,81 @@ export default function Dashboard({ view }: { view: "overview" | "flights" | "fo
               )}
             </div>
 
-            <div className="table-footer">
-              Hiển thị {filteredFlights.length} / {scopedFlights.length} chuyến bay trong phạm vi đã chọn
-              <span>
-                {apiMode !== "demo"
-                  ? `Kết nối trực tiếp API (${apiMode})`
-                  : "Chế độ dữ liệu mẫu · Tự động chuyển sang API thật khi bật backend"}
-              </span>
+            <div className="table-footer" style={{ alignItems: "center", flexWrap: "wrap" }}>
+              <div>
+                Hiển thị{" "}
+                <strong>
+                  {filteredFlights.length ? startIndex + 1 : 0}–{Math.min(startIndex + pageSize, filteredFlights.length)}
+                </strong>{" "}
+                trên tổng số <strong>{filteredFlights.length}</strong> chuyến bay (Trang {safePage}/{totalPages})
+              </div>
+
+              <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+                <button
+                  className="button secondary"
+                  style={{ minHeight: "28px", padding: "4px 9px", fontSize: "10px" }}
+                  disabled={safePage <= 1}
+                  onClick={() => setCurrentPage(1)}
+                  aria-label="Trang đầu"
+                >
+                  « Đầu
+                </button>
+                <button
+                  className="button secondary"
+                  style={{ minHeight: "28px", padding: "4px 9px", fontSize: "10px" }}
+                  disabled={safePage <= 1}
+                  onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                  aria-label="Trang trước"
+                >
+                  ‹ Trước
+                </button>
+
+                {pageNumbers.map((p, idx) =>
+                  p === "..." ? (
+                    <span key={`ellipsis-${idx}`} style={{ padding: "0 4px", color: "#95a1ac" }}>
+                      …
+                    </span>
+                  ) : (
+                    <button
+                      key={p}
+                      onClick={() => setCurrentPage(p)}
+                      aria-current={safePage === p ? "page" : undefined}
+                      style={{
+                        minHeight: "28px",
+                        minWidth: "28px",
+                        padding: "4px 8px",
+                        fontSize: "10px",
+                        borderRadius: "5px",
+                        border: safePage === p ? "1px solid #0b9d87" : "1px solid #dfe5e9",
+                        background: safePage === p ? "#0b9d87" : "#fff",
+                        color: safePage === p ? "#fff" : "#536274",
+                        fontWeight: safePage === p ? 600 : 400,
+                      }}
+                    >
+                      {p}
+                    </button>
+                  )
+                )}
+
+                <button
+                  className="button secondary"
+                  style={{ minHeight: "28px", padding: "4px 9px", fontSize: "10px" }}
+                  disabled={safePage >= totalPages}
+                  onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                  aria-label="Trang sau"
+                >
+                  Sau ›
+                </button>
+                <button
+                  className="button secondary"
+                  style={{ minHeight: "28px", padding: "4px 9px", fontSize: "10px" }}
+                  disabled={safePage >= totalPages}
+                  onClick={() => setCurrentPage(totalPages)}
+                  aria-label="Trang cuối"
+                >
+                  Cuối »
+                </button>
+              </div>
             </div>
           </section>
         </> : forecast ? <>
