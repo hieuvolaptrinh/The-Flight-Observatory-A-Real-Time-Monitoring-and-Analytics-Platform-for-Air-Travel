@@ -2,5 +2,7 @@
 !requirements.txt
 !app/
 !app/**
+!models/
+!models/**
 **/__pycache__/
 **/*.py[cod]
