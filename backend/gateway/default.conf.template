@@ -1,7 +1,8 @@
 # Official nginx image substitutes FRONTEND_ORIGIN at container startup.
 map $http_origin $cors_origin {
-    default "";
+    default "*";
     "${FRONTEND_ORIGIN}" $http_origin;
+    "~^https?://(localhost|127\.0\.0\.1)(:[0-9]+)?$" $http_origin;
 }
 
 server {
@@ -25,6 +26,13 @@ server {
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_connect_timeout 5s;
     proxy_read_timeout 60s;
+
+    # Prevent duplicate CORS headers when upstream FastAPI services also have CORSMiddleware enabled.
+    proxy_hide_header Access-Control-Allow-Origin;
+    proxy_hide_header Access-Control-Allow-Methods;
+    proxy_hide_header Access-Control-Allow-Headers;
+    proxy_hide_header Access-Control-Allow-Credentials;
+    proxy_hide_header Access-Control-Expose-Headers;
 
     add_header Access-Control-Allow-Origin $cors_origin always;
     add_header Access-Control-Allow-Methods "GET, POST, DELETE, OPTIONS" always;

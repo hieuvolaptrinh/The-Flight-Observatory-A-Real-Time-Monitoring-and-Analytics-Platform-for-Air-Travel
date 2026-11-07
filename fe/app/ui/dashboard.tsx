@@ -227,8 +227,8 @@ export default function Dashboard({ view }: { view: "overview" | "flights" | "fo
       (activeBackendRef.current.mode === "ingestion" || activeBackendRef.current.mode === "gateway")
         ? [{ mode: activeBackendRef.current.mode, baseUrl: activeBackendRef.current.baseUrl, url: `${activeBackendRef.current.baseUrl}/flights?${qs}` }]
         : [
-            ...DIRECT_INGESTION_URLS.map(u => ({ mode: "ingestion" as const, baseUrl: u, url: `${u}/flights?${qs}` })),
             { mode: "gateway" as const, baseUrl: `${API_BASE}/ingestion`, url: `${API_BASE}/ingestion/flights?${qs}` },
+            ...DIRECT_INGESTION_URLS.map(u => ({ mode: "ingestion" as const, baseUrl: u, url: `${u}/flights?${qs}` })),
           ];
 
     for (const candidate of ingestionCandidates) {
@@ -321,8 +321,8 @@ export default function Dashboard({ view }: { view: "overview" | "flights" | "fo
   async function triggerIngestionRun() {
     setBusy(true);
     const runUrls = [
-      ...DIRECT_INGESTION_URLS.map(u => `${u}/run`),
       `${API_BASE}/ingestion/run`,
+      ...DIRECT_INGESTION_URLS.map(u => `${u}/run`),
     ];
     for (const url of runUrls) {
       try {

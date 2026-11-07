@@ -9,7 +9,7 @@ load_dotenv(_SERVICE_DIR.parent / ".env")
 
 _DEFAULT_DB = f"sqlite:///{(_SERVICE_DIR / 'data' / 'clustering.db').as_posix()}"
 _DEFAULT_SOURCE_DB = f"sqlite:///{(_SERVICE_DIR.parent / 'ingestion' / 'data' / 'flights.db').as_posix()}"
-_DEFAULT_CSV = str((_SERVICE_DIR.parents[1] / "data-simulator" / "data" / "T_ONTIME_REPORTING_1.csv").resolve())
+_DEFAULT_CSV = str((_SERVICE_DIR.parent.parent / "data-simulator" / "data" / "T_ONTIME_REPORTING_1.csv").resolve())
 _DEFAULT_MODEL = str((_SERVICE_DIR / "models" / "clustering_bundle.joblib").resolve())
 
 
