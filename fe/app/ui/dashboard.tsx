@@ -53,8 +53,73 @@ function TrendChart({ rate, day }: { rate: number; day: string }) {
   </svg></div>;
 }
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8080/api";
-const DIRECT_INGESTION_URL = "http://localhost:8004";
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:8080/api";
+const DIRECT_INGESTION_URLS = ["http://127.0.0.1:8004", "http://localhost:8004"];
+const DIRECT_SIMULATOR_URLS = ["http://127.0.0.1:8000", "http://localhost:8000"];
+
+const CARRIER_MAP: Record<string, string> = {
+  AA: "American Airlines",
+  DL: "Delta Air Lines",
+  UA: "United Airlines",
+  WN: "Southwest Airlines",
+  AS: "Alaska Airlines",
+  B6: "JetBlue Airways",
+  NK: "Spirit Airlines",
+  F9: "Frontier Airlines",
+  OO: "SkyWest Airlines",
+};
+
+function normalizeSimulatorRecord(raw: Record<string, unknown>, fetchedAt: string, idx: number): FlightItem {
+  const flDate = String(raw.FL_DATE || "2025-01-06");
+  const carrier = String(raw.OP_UNIQUE_CARRIER || "AA").toUpperCase();
+  const flNum = String(raw.OP_CARRIER_FL_NUM || idx);
+  const origin = String(raw.ORIGIN || "JFK").toUpperCase();
+  const dest = String(raw.DEST || "LAX").toUpperCase();
+  const depRaw = String(raw.CRS_DEP_TIME || "0800").padStart(4, "0");
+  const arrRaw = String(raw.CRS_ARR_TIME || "1000").padStart(4, "0");
+  const crsDep = `${depRaw.slice(0, 2)}:${depRaw.slice(2, 4)}`;
+  const crsArr = `${arrRaw.slice(0, 2)}:${arrRaw.slice(2, 4)}`;
+  const flightKey = `${flDate}_${carrier}_${flNum}_${origin}_${dest}_${depRaw}`;
+
+  // Hash tất định để ước lượng delay khi đọc thẳng từ Simulator
+  let hash = 0;
+  for (let i = 0; i < flightKey.length; i++) {
+    hash = (hash * 31 + flightKey.charCodeAt(i)) >>> 0;
+  }
+  const bucket = hash % 100;
+  const depHour = parseInt(depRaw.slice(0, 2), 10) || 12;
+  const threshold = 15 <= depHour && depHour <= 21 ? 58 : 72;
+  let delayMinutes = hash % 12;
+  let delayStatus: FlightItem["delay_status"] = "on_time";
+  if (bucket >= threshold && bucket < threshold + 20) {
+    delayMinutes = 15 + (hash % 28);
+    delayStatus = "moderate_delay";
+  } else if (bucket >= threshold + 20) {
+    delayMinutes = 45 + (hash % 65);
+    delayStatus = "severe_delay";
+  }
+
+  return {
+    flight_key: flightKey,
+    fl_date: flDate,
+    op_unique_carrier: carrier,
+    carrier_name: CARRIER_MAP[carrier] || `Carrier ${carrier}`,
+    tail_num: String(raw.TAIL_NUM || "—"),
+    op_carrier_fl_num: flNum,
+    flight_code: `${carrier} ${flNum}`,
+    origin,
+    dest,
+    route: `${origin} → ${dest}`,
+    crs_dep_time: crsDep,
+    crs_arr_time: crsArr,
+    crs_elapsed_time: Number(raw.CRS_ELAPSED_TIME || 120),
+    distance: Number(raw.DISTANCE || 800),
+    delay_minutes: delayMinutes,
+    delay_status: delayStatus,
+    is_delayed: delayMinutes >= 15 ? 1 : 0,
+    ingested_at: fetchedAt,
+  };
+}
 
 export default function Dashboard({ view }: { view: "overview" | "flights" | "forecast" }) {
   const isOverview = view === "overview";
@@ -77,7 +142,7 @@ export default function Dashboard({ view }: { view: "overview" | "flights" | "fo
   // State cho trang Danh sách chuyến bay (FE · Chuyến bay - STT 15)
   const [liveFlights, setLiveFlights] = useState<FlightItem[] | null>(null);
   const [apiReady, setApiReady] = useState<boolean | null>(null);
-  const [apiMode, setApiMode] = useState<"gateway" | "direct" | "demo">("demo");
+  const [apiMode, setApiMode] = useState<"gateway" | "ingestion" | "simulator" | "demo">("demo");
   const [batchMeta, setBatchMeta] = useState<{
     total_stored?: number;
     window_start?: number;
@@ -90,11 +155,11 @@ export default function Dashboard({ view }: { view: "overview" | "flights" | "fo
 
   const fetchIngestionFlights = useCallback(async (silent = false) => {
     setBusy(true);
-    const urls = [
+    const ingestionCandidates = [
+      ...DIRECT_INGESTION_URLS.map(u => ({ mode: "ingestion" as const, url: `${u}/flights?limit=500` })),
       { mode: "gateway" as const, url: `${API_BASE}/ingestion/flights?limit=500` },
-      { mode: "direct" as const, url: `${DIRECT_INGESTION_URL}/flights?limit=500` },
     ];
-    for (const candidate of urls) {
+    for (const candidate of ingestionCandidates) {
       try {
         const res = await fetch(candidate.url, { cache: "no-store" });
         if (!res.ok) continue;
@@ -116,41 +181,80 @@ export default function Dashboard({ view }: { view: "overview" | "flights" | "fo
         }
         setBusy(false);
         if (!silent) {
-          notify(json.ready ? `Đã tải ${items.length} chuyến bay từ API Ingestion.` : "DB đang trống (ready: false). Hãy nhấn 'Thu thập batch mới'!");
+          notify(json.ready ? `Đã tải ${items.length} chuyến bay từ DB Ingestion.` : "DB đang trống (ready: false). Hãy nhấn 'Thu thập batch mới'!");
         }
         return;
       } catch {
         // try next endpoint
       }
     }
+
+    // Nếu service Ingestion (8004) chưa bật nhưng Data Simulator (8000) đang bật, lấy trực tiếp từ Simulator!
+    for (const simBase of DIRECT_SIMULATOR_URLS) {
+      try {
+        const res = await fetch(`${simBase}/flights`, { cache: "no-store" });
+        if (!res.ok) continue;
+        const simJson = await res.json();
+        const rawList: Record<string, unknown>[] = simJson.data || [];
+        const fetchedAt = simJson.fetched_at || new Date().toISOString();
+        const incoming = rawList.map((r, i) => normalizeSimulatorRecord(r, fetchedAt, i));
+
+        setLiveFlights(prev => {
+          const existing = prev || [];
+          const existingKeys = new Set(existing.map(item => item.flight_key));
+          const newItems = incoming.filter(item => !existingKeys.has(item.flight_key));
+          const merged = [...newItems, ...existing];
+          setBatchMeta({
+            total_stored: merged.length,
+            window_start: simJson.window_start,
+            window_end: simJson.window_end,
+            inserted_count: newItems.length,
+            duplicate_count: incoming.length - newItems.length,
+          });
+          return merged;
+        });
+        setApiMode("simulator");
+        setApiReady(true);
+        setUpdated(fetchedAt.replace("T", " ").replace("Z", " UTC"));
+        setBusy(false);
+        if (!silent) {
+          notify(`Đã thu thập cửa sổ [${simJson.window_start}..${simJson.window_end}] từ Simulator (port 8000)!`);
+        }
+        return;
+      } catch {
+        // try next
+      }
+    }
+
     setApiMode("demo");
     setApiReady(null);
     setBusy(false);
     if (!silent) {
-      notify("Đang hiển thị dữ liệu mẫu (khởi động service ingestion để tải API thật).");
+      notify("Đang hiển thị dữ liệu mẫu (hãy bật port 8004 hoặc 8000 để lấy API thật).");
     }
   }, []);
 
   async function triggerIngestionRun() {
     setBusy(true);
     const runUrls = [
+      ...DIRECT_INGESTION_URLS.map(u => `${u}/run`),
       `${API_BASE}/ingestion/run`,
-      `${DIRECT_INGESTION_URL}/run`,
     ];
     for (const url of runUrls) {
       try {
         const res = await fetch(url, { method: "POST" });
         if (res.ok) {
           await fetchIngestionFlights(true);
-          notify("Đã chạy POST /run: nạp cửa sổ trượt & chống trùng vào DB thành công!");
+          notify("Đã chạy POST /run (port 8004): nạp cửa sổ trượt & lưu vào DB thành công!");
           return;
         }
       } catch {
         // try next
       }
     }
-    setBusy(false);
-    notify("Không kết nối được POST /run của service Ingestion (port 8080/8004).");
+
+    // Fallback sang Simulator (port 8000) nếu bạn chỉ mới bật port 8000 mà chưa bật port 8004
+    await fetchIngestionFlights(false);
   }
 
   useEffect(() => {
@@ -260,7 +364,7 @@ export default function Dashboard({ view }: { view: "overview" | "flights" | "fo
       </nav>
       <div className="sidebar-bottom"><div className="sidebar-card"><span className="orbit-icon"><Icon name="chart" size={25} /></span><strong>Mỗi chuyến bay,<br />một góc nhìn rõ hơn.</strong><p>Theo dõi hôm nay.<br />Chủ động cho ngày mai.</p><span className="sidebar-card-line" /></div><div className="demo-status"><span className="status-dot" />{apiMode !== "demo" ? `API: ${apiMode.toUpperCase()}` : "Chế độ demo UI"}<span>v1.0</span></div><div className="profile"><span className="avatar">V</span><div>Việt · Flight Team<small>Flight Delay Project</small></div><span className="profile-badge">VN</span></div></div>
     </aside>
-    <div className="main-shell"><header className="topbar"><div className="breadcrumbs">Workspace<span>/</span><strong>{pageTitle}</strong></div><div className="topbar-right"><span className="sample-pill">{isFlights && apiMode !== "demo" ? "API INGESTION ĐÃ KẾT NỐI" : "DỮ LIỆU MẪU"}</span><span className="header-divider" /><Icon name="globe" size={17} /><span>Tiếng Việt</span><span className="mini-avatar">V</span></div></header>
+    <div className="main-shell"><header className="topbar"><div className="breadcrumbs">Workspace<span>/</span><strong>{pageTitle}</strong></div><div className="topbar-right"><span className="sample-pill">{isFlights && apiMode !== "demo" ? `KẾT NỐI: ${apiMode.toUpperCase()}` : "DỮ LIỆU MẪU"}</span><span className="header-divider" /><Icon name="globe" size={17} /><span>Tiếng Việt</span><span className="mini-avatar">V</span></div></header>
       <main className="main-content">
         <div className="page-heading">
           <div>
@@ -331,7 +435,7 @@ export default function Dashboard({ view }: { view: "overview" | "flights" | "fo
           <span className="status-dot" />
           <span>
             {isFlights && apiMode !== "demo"
-              ? <>Nguồn: <strong>API Ingestion ({apiMode})</strong> · Cập nhật: <strong>{updated}</strong></>
+              ? <>Nguồn: <strong>API {apiMode.toUpperCase()}</strong> · Cập nhật: <strong>{updated}</strong></>
               : <>Dữ liệu mẫu · Lần cập nhật: <strong>{updated}</strong></>}
           </span>
           <span className="update-divider">|</span>
@@ -578,7 +682,7 @@ export default function Dashboard({ view }: { view: "overview" | "flights" | "fo
               Hiển thị {filteredFlights.length} / {scopedFlights.length} chuyến bay trong phạm vi đã chọn
               <span>
                 {apiMode !== "demo"
-                  ? `Kết nối trực tiếp API Ingestion (${apiMode})`
+                  ? `Kết nối trực tiếp API (${apiMode})`
                   : "Chế độ dữ liệu mẫu · Tự động chuyển sang API thật khi bật backend"}
               </span>
             </div>
@@ -591,7 +695,7 @@ export default function Dashboard({ view }: { view: "overview" | "flights" | "fo
         </> : <>
           <section className="metrics" aria-label="Chỉ số tổng quan"><Metric title="Tổng chuyến bay" value={number(total)} icon="plane" note={`${selection.length} sân bay trong phạm vi theo dõi`} /><Metric title="Tỷ lệ chuyến bay trễ" value={rate.toFixed(1)} unit="%" icon="chart" note="Quy ước demo: trễ từ 15 phút" color="coral" /><Metric title="Số chuyến bay trễ" value={number(delayed)} unit="chuyến" icon="clock" note="Theo ngày và bộ lọc đã chọn" color="blue" /><Metric title="Delay trung bình" value={avg.toFixed(1)} unit="phút" icon="clock" note="Trung bình trên tất cả chuyến bay" color="purple" /></section>
           <div className="overview-charts"><section className="panel"><div className="panel-heading"><div><h2>Nhịp bay trong ngày</h2><p>Biến động tỷ lệ chuyến bay trễ theo giờ · UTC</p></div><span className="legend"><i />Tỷ lệ trễ</span></div><TrendChart rate={rate} day={day} /><div className="chart-caption"><Icon name="clock" size={15} /><span>Dữ liệu biểu đồ minh họa cho ngày {day}</span></div></section><section className="panel donut-panel"><div className="panel-heading"><div><h2>Trạng thái chuyến bay</h2><p>Tỷ trọng theo dữ liệu đã lọc</p></div></div><div className="donut" style={{background:`conic-gradient(#0b9d87 0 ${100-rate}%, #f3aa77 ${100-rate}% 100%)`}} role="img" aria-label={`${(100-rate).toFixed(1)}% đúng giờ, ${rate.toFixed(1)}% trễ`}><div><span>Đúng giờ</span><strong>{(100-rate).toFixed(1)}<small>%</small></strong><span className="donut-check"><Icon name="check" size={13} />Đang theo dõi</span></div></div><div className="donut-legend"><div><i className="teal-bg" /><span>Đúng giờ / sớm</span><strong>{number(total-delayed)}</strong></div><div><i className="orange-bg" /><span>Trễ ≥ 15 phút</span><strong>{number(delayed)}</strong></div></div></section></div>
-          <div className="bottom-grid"><section className="panel ranking-panel"><div className="panel-heading"><div><h2>Điểm nóng chậm chuyến</h2><p>Xếp hạng theo tỷ lệ trễ giảm dần</p></div><div className="segmented"><button className={rankBy==="airports" ? "selected" : ""} onClick={() => setRankBy("airports")}>Sân bay</button><button className={rankBy==="carriers" ? "selected" : ""} onClick={() => setRankBy("carriers")}>Hãng bay</button></div></div><div className="ranking-list">{(rankBy==="airports" ? selection.map(a => ({...a,rate:a.rate*carrierRate})) : carriers.filter(c => carrier==="all" || c.code===carrier)).slice(0,5).map((a,i) => <div className="ranking-row" key={a.code}><span className="rank-number">{String(i+1).padStart(2,"0")}</span><span className="airport-code">{a.code}</span><div className="ranking-name"><strong>{a.name}</strong><span>{rankBy==="airports" ? "Sân bay quốc tế" : "Hãng hàng không"}</span></div><div className="ranking-track"><div style={{width:`${a.rate/40*100}%`}} /></div><strong className="rank-rate">{a.rate.toFixed(1)}<small>%</small></strong></div>)}</div><div className="panel-footnote">Phạm vi xếp hạng: {rankBy==="airports" ? "sân bay đã chọn" : "hãng bay đã chọn, toàn bộ sân bay"} · Dữ liệu demo</div></section><section className="tomorrow-card"><span className="tomorrow-tag"><Icon name="spark" size={15} />GÓC NHÌN NGÀY MAI</span><h2>Hành trình tốt hơn<br />bắt đầu từ dự báo.</h2><p>Khám phá mức delay dự kiến và nguy cơ chậm chuyến cho ngày 07/11/2026.</p><div className="flight-illustration" aria-hidden="true"><span className="flight-code">TODAY</span><span className="flight-dashes" /><span className="flight-plane"><Icon name="plane" size={27} /></span><span className="flight-dashes" /><span className="flight-code">TOMORROW</span></div><Link href="/forecast" className="forecast-link">Khám phá dự báo<Icon name="arrow" size={18} /></Link></section></div>
+          <div className="bottom-grid"><section className="panel ranking-panel"><div className="panel-heading"><div><h2>Điểm nóng chậm chuyến</h2><p>Xếp hạng theo tỷ lệ trễ giảm dần</p></div><div className="segmented"><button className={rankBy==="airports" ? "selected" : ""} onClick={() => setRankBy("airports")}>Sân bay</button><button className={rankBy==="carriers" ? "selected" : ""} onClick={() => setRankBy("carriers")}>Hãng bay</button></div></div><div className="ranking-list">{(rankBy==="airports" ? selection.map(a => ({...a,rate:a.rate*carrierRate})) : carriers.filter(c => carrier==="all" || c.code===carrier)).slice(0,5).map((a,i) => <div className="ranking-row" key={a.code}><span className="rank-number">{String(i+1).padStart(2,"0")}</span><div className="airport-code">{a.code}</div><div className="ranking-name"><strong>{a.name}</strong><span>{rankBy==="airports" ? "Sân bay quốc tế" : "Hãng hàng không"}</span></div><div className="ranking-track"><div style={{width:`${a.rate/40*100}%`}} /></div><strong className="rank-rate">{a.rate.toFixed(1)}<small>%</small></strong></div>)}</div><div className="panel-footnote">Phạm vi xếp hạng: {rankBy==="airports" ? "sân bay đã chọn" : "hãng bay đã chọn, toàn bộ sân bay"} · Dữ liệu demo</div></section><section className="tomorrow-card"><span className="tomorrow-tag"><Icon name="spark" size={15} />GÓC NHÌN NGÀY MAI</span><h2>Hành trình tốt hơn<br />bắt đầu từ dự báo.</h2><p>Khám phá mức delay dự kiến và nguy cơ chậm chuyến cho ngày 07/11/2026.</p><div className="flight-illustration" aria-hidden="true"><span className="flight-code">TODAY</span><span className="flight-dashes" /><span className="flight-plane"><Icon name="plane" size={27} /></span><span className="flight-dashes" /><span className="flight-code">TOMORROW</span></div><Link href="/forecast" className="forecast-link">Khám phá dự báo<Icon name="arrow" size={18} /></Link></section></div>
         </>}
         <footer className="page-footer"><span><strong>flightlens.</strong> Rõ dữ liệu. Chủ động hành trình.</span><span>Mẫu giao diện · US Flight Delay · 2026</span></footer>
       </main>
