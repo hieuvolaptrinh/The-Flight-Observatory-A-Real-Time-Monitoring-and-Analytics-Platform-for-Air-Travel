@@ -1,4 +1,4 @@
-// Dữ liệu tổng hợp để review UI. Thay bằng response API khi tích hợp backend.
+// Dữ liệu tổng hợp để review UI. Tự động thay bằng response API khi kết nối backend.
 export const airports = [
   { code: "JFK", name: "John F. Kennedy", city: "New York", flights: 1842, rate: 28.4, delay: 24 },
   { code: "ORD", name: "O’Hare International", city: "Chicago", flights: 2310, rate: 25.6, delay: 22 },
@@ -27,6 +27,53 @@ export const predictions = [
   { flight: "UA 880", carrier: "UA", origin: "DFW", destination: "JFK", time: "19:10", delay: 29, probability: 64 },
   { flight: "WN 159", carrier: "WN", origin: "SFO", destination: "ATL", time: "20:30", delay: 9, probability: 24 },
 ];
+
+export interface FlightItem {
+  flight_key: string;
+  fl_date: string;
+  op_unique_carrier: string;
+  carrier_name: string;
+  tail_num: string;
+  op_carrier_fl_num: string;
+  flight_code: string;
+  origin: string;
+  dest: string;
+  route: string;
+  crs_dep_time: string;
+  crs_arr_time: string;
+  crs_elapsed_time: number;
+  distance: number;
+  delay_minutes: number;
+  delay_status: "on_time" | "moderate_delay" | "severe_delay";
+  is_delayed: number;
+  ingested_at: string;
+}
+
+export const demoFlights: FlightItem[] = [
+  { flight_key: "2025-01-06_AA_16_SFO_JFK_1321", fl_date: "2025-01-06", op_unique_carrier: "AA", carrier_name: "American Airlines", tail_num: "N102NN", op_carrier_fl_num: "16", flight_code: "AA 16", origin: "SFO", dest: "JFK", route: "SFO → JFK", crs_dep_time: "13:21", crs_arr_time: "21:59", crs_elapsed_time: 338, distance: 2586, delay_minutes: 4, delay_status: "on_time", is_delayed: 0, ingested_at: "2026-11-07T02:30:00Z" },
+  { flight_key: "2025-01-06_AA_179_JFK_SFO_0829", fl_date: "2025-01-06", op_unique_carrier: "AA", carrier_name: "American Airlines", tail_num: "N102NN", op_carrier_fl_num: "179", flight_code: "AA 179", origin: "JFK", dest: "SFO", route: "JFK → SFO", crs_dep_time: "08:29", crs_arr_time: "12:22", crs_elapsed_time: 413, distance: 2586, delay_minutes: 28, delay_status: "moderate_delay", is_delayed: 1, ingested_at: "2026-11-07T02:30:00Z" },
+  { flight_key: "2025-01-06_AA_2056_CLT_LGA_1839", fl_date: "2025-01-06", op_unique_carrier: "AA", carrier_name: "American Airlines", tail_num: "N102UW", op_carrier_fl_num: "2056", flight_code: "AA 2056", origin: "CLT", dest: "LGA", route: "CLT → LGA", crs_dep_time: "18:39", crs_arr_time: "20:30", crs_elapsed_time: 111, distance: 544, delay_minutes: 56, delay_status: "severe_delay", is_delayed: 1, ingested_at: "2026-11-07T02:30:00Z" },
+  { flight_key: "2025-01-06_UA_412_ORD_LAX_1510", fl_date: "2025-01-06", op_unique_carrier: "UA", carrier_name: "United Airlines", tail_num: "N384UA", op_carrier_fl_num: "412", flight_code: "UA 412", origin: "ORD", dest: "LAX", route: "ORD → LAX", crs_dep_time: "15:10", crs_arr_time: "17:45", crs_elapsed_time: 275, distance: 1744, delay_minutes: 34, delay_status: "moderate_delay", is_delayed: 1, ingested_at: "2026-11-07T02:30:00Z" },
+  { flight_key: "2025-01-06_DL_809_ATL_DFW_0940", fl_date: "2025-01-06", op_unique_carrier: "DL", carrier_name: "Delta Air Lines", tail_num: "N912DL", op_carrier_fl_num: "809", flight_code: "DL 809", origin: "ATL", dest: "DFW", route: "ATL → DFW", crs_dep_time: "09:40", crs_arr_time: "11:05", crs_elapsed_time: 145, distance: 731, delay_minutes: 2, delay_status: "on_time", is_delayed: 0, ingested_at: "2026-11-07T02:30:00Z" },
+  { flight_key: "2025-01-06_WN_1105_LAX_ORD_1620", fl_date: "2025-01-06", op_unique_carrier: "WN", carrier_name: "Southwest Airlines", tail_num: "N781WN", op_carrier_fl_num: "1105", flight_code: "WN 1105", origin: "LAX", dest: "ORD", route: "LAX → ORD", crs_dep_time: "16:20", crs_arr_time: "22:15", crs_elapsed_time: 235, distance: 1744, delay_minutes: 19, delay_status: "moderate_delay", is_delayed: 1, ingested_at: "2026-11-07T02:30:00Z" },
+  { flight_key: "2025-01-06_DL_314_JFK_ATL_1745", fl_date: "2025-01-06", op_unique_carrier: "DL", carrier_name: "Delta Air Lines", tail_num: "N504DN", op_carrier_fl_num: "314", flight_code: "DL 314", origin: "JFK", dest: "ATL", route: "JFK → ATL", crs_dep_time: "17:45", crs_arr_time: "20:25", crs_elapsed_time: 160, distance: 760, delay_minutes: 62, delay_status: "severe_delay", is_delayed: 1, ingested_at: "2026-11-07T02:30:00Z" },
+  { flight_key: "2025-01-06_UA_618_SFO_ORD_0715", fl_date: "2025-01-06", op_unique_carrier: "UA", carrier_name: "United Airlines", tail_num: "N291UA", op_carrier_fl_num: "618", flight_code: "UA 618", origin: "SFO", dest: "ORD", route: "SFO → ORD", crs_dep_time: "07:15", crs_arr_time: "13:30", crs_elapsed_time: 255, distance: 1846, delay_minutes: 0, delay_status: "on_time", is_delayed: 0, ingested_at: "2026-11-07T02:30:00Z" },
+  { flight_key: "2025-01-06_WN_502_DFW_LAX_1130", fl_date: "2025-01-06", op_unique_carrier: "WN", carrier_name: "Southwest Airlines", tail_num: "N442WN", op_carrier_fl_num: "502", flight_code: "WN 502", origin: "DFW", dest: "LAX", route: "DFW → LAX", crs_dep_time: "11:30", crs_arr_time: "12:55", crs_elapsed_time: 205, distance: 1235, delay_minutes: 7, delay_status: "on_time", is_delayed: 0, ingested_at: "2026-11-07T02:30:00Z" },
+  { flight_key: "2025-01-06_AA_924_ORD_JFK_1915", fl_date: "2025-01-06", op_unique_carrier: "AA", carrier_name: "American Airlines", tail_num: "N819AA", op_carrier_fl_num: "924", flight_code: "AA 924", origin: "ORD", dest: "JFK", route: "ORD → JFK", crs_dep_time: "19:15", crs_arr_time: "22:35", crs_elapsed_time: 140, distance: 740, delay_minutes: 49, delay_status: "severe_delay", is_delayed: 1, ingested_at: "2026-11-07T02:30:00Z" },
+];
+
+export const statusLabels: Record<FlightItem["delay_status"], string> = {
+  on_time: "Đúng giờ (< 15p)",
+  moderate_delay: "Trễ nhẹ (15–44p)",
+  severe_delay: "Trễ nặng (≥ 45p)",
+};
+
+export const statusBadgeClass: Record<FlightItem["delay_status"], "low" | "medium" | "high"> = {
+  on_time: "low",
+  moderate_delay: "medium",
+  severe_delay: "high",
+};
+
 export const riskOf = (probability: number) => probability >= 60 ? "high" : probability >= 30 ? "medium" : "low";
 export const riskLabels = { high: "Nguy cơ cao", medium: "Trung bình", low: "Nguy cơ thấp" };
 export const number = (value: number) => new Intl.NumberFormat("vi-VN").format(value);

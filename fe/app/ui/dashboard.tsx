@@ -1,8 +1,19 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
-import { airports, carriers, predictions, riskOf, riskLabels, number } from "./demo-data";
+import { useEffect, useState, useCallback } from "react";
+import {
+  airports,
+  carriers,
+  predictions,
+  demoFlights,
+  FlightItem,
+  statusLabels,
+  statusBadgeClass,
+  riskOf,
+  riskLabels,
+  number,
+} from "./demo-data";
 
 type IconName = "plane" | "grid" | "spark" | "chart" | "clock" | "arrow" | "download" | "refresh" | "calendar" | "search" | "chevron" | "check" | "alert" | "globe";
 function Icon({ name, size = 20 }: { name: IconName; size?: number }) {
@@ -42,18 +53,112 @@ function TrendChart({ rate, day }: { rate: number; day: string }) {
   </svg></div>;
 }
 
-export default function Dashboard({ view }: { view: "overview" | "forecast" }) {
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8080/api";
+const DIRECT_INGESTION_URL = "http://localhost:8004";
+
+export default function Dashboard({ view }: { view: "overview" | "flights" | "forecast" }) {
+  const isOverview = view === "overview";
+  const isFlights = view === "flights";
   const forecast = view === "forecast";
+
   const [airport,setAirport] = useState("all");
+  const [destAirport,setDestAirport] = useState("all");
   const [carrier,setCarrier] = useState("all");
   const [day,setDay] = useState("06/11/2026");
   const [rankBy,setRankBy] = useState<"airports" | "carriers">("airports");
   const [risk,setRisk] = useState("all");
+  const [flightStatus,setFlightStatus] = useState("all");
   const [search,setSearch] = useState("");
   const [sort,setSort] = useState("time");
   const [updated,setUpdated] = useState("14:35 · 06/11/2026 UTC");
   const [toast,setToast] = useState("");
   const [busy,setBusy] = useState(false);
+
+  // State cho trang Danh sách chuyến bay (FE · Chuyến bay - STT 15)
+  const [liveFlights, setLiveFlights] = useState<FlightItem[] | null>(null);
+  const [apiReady, setApiReady] = useState<boolean | null>(null);
+  const [apiMode, setApiMode] = useState<"gateway" | "direct" | "demo">("demo");
+  const [batchMeta, setBatchMeta] = useState<{
+    total_stored?: number;
+    window_start?: number;
+    window_end?: number;
+    inserted_count?: number;
+    duplicate_count?: number;
+  } | null>(null);
+
+  function notify(message: string) { setToast(message); setTimeout(() => setToast(""),4000); }
+
+  const fetchIngestionFlights = useCallback(async (silent = false) => {
+    setBusy(true);
+    const urls = [
+      { mode: "gateway" as const, url: `${API_BASE}/ingestion/flights?limit=500` },
+      { mode: "direct" as const, url: `${DIRECT_INGESTION_URL}/flights?limit=500` },
+    ];
+    for (const candidate of urls) {
+      try {
+        const res = await fetch(candidate.url, { cache: "no-store" });
+        if (!res.ok) continue;
+        const json = await res.json();
+        setApiMode(candidate.mode);
+        setApiReady(Boolean(json.ready));
+        const items: FlightItem[] = json?.output?.items || [];
+        const meta = json?.output?.metadata || {};
+        setLiveFlights(items);
+        setBatchMeta({
+          total_stored: meta.total_stored ?? items.length,
+          window_start: meta.last_batch?.window_start,
+          window_end: meta.last_batch?.window_end,
+          inserted_count: meta.last_batch?.inserted_count,
+          duplicate_count: meta.last_batch?.duplicate_count,
+        });
+        if (json.updated_at) {
+          setUpdated(new Date(json.updated_at).toISOString().replace("T", " ").slice(0, 19) + " UTC");
+        }
+        setBusy(false);
+        if (!silent) {
+          notify(json.ready ? `Đã tải ${items.length} chuyến bay từ API Ingestion.` : "DB đang trống (ready: false). Hãy nhấn 'Thu thập batch mới'!");
+        }
+        return;
+      } catch {
+        // try next endpoint
+      }
+    }
+    setApiMode("demo");
+    setApiReady(null);
+    setBusy(false);
+    if (!silent) {
+      notify("Đang hiển thị dữ liệu mẫu (khởi động service ingestion để tải API thật).");
+    }
+  }, []);
+
+  async function triggerIngestionRun() {
+    setBusy(true);
+    const runUrls = [
+      `${API_BASE}/ingestion/run`,
+      `${DIRECT_INGESTION_URL}/run`,
+    ];
+    for (const url of runUrls) {
+      try {
+        const res = await fetch(url, { method: "POST" });
+        if (res.ok) {
+          await fetchIngestionFlights(true);
+          notify("Đã chạy POST /run: nạp cửa sổ trượt & chống trùng vào DB thành công!");
+          return;
+        }
+      } catch {
+        // try next
+      }
+    }
+    setBusy(false);
+    notify("Không kết nối được POST /run của service Ingestion (port 8080/8004).");
+  }
+
+  useEffect(() => {
+    if (isFlights) {
+      fetchIngestionFlights(true);
+    }
+  }, [isFlights, fetchIngestionFlights]);
+
   const selection = airports.filter(a => airport === "all" || a.code === airport);
   const carrierRate = carrier === "all" ? 1 : carriers.find(c => c.code === carrier)!.rate/20;
   const factor = (day === "06/11/2026" ? 1 : day === "05/11/2026" ? .91 : .86) * (carrier === "all" ? 1 : carriers.find(c => c.code === carrier)!.flights/12480);
@@ -61,35 +166,424 @@ export default function Dashboard({ view }: { view: "overview" | "forecast" }) {
   const rate = selection.reduce((s,a) => s+a.rate*a.flights,0)/selection.reduce((s,a) => s+a.flights,0)*carrierRate;
   const delayed = Math.round(total*rate/100);
   const avg = selection.reduce((s,a) => s+a.delay*a.flights,0)/selection.reduce((s,a) => s+a.flights,0);
+
+  // Dữ liệu cho trang Dự báo
   const scoped = predictions.filter(p => (airport === "all" || p.origin === airport) && (carrier === "all" || p.carrier === carrier));
   const filtered = scoped.filter(p => (risk === "all" || riskOf(p.probability) === risk) && `${p.flight} ${p.origin} ${p.destination}`.toLowerCase().includes(search.toLowerCase())).sort((a,b) => sort === "risk" ? b.probability-a.probability : sort === "delay" ? b.delay-a.delay : a.time.localeCompare(b.time));
   const highCount = scoped.filter(p => riskOf(p.probability) === "high").length;
   const forecastAvg = scoped.length ? scoped.reduce((s,p) => s+p.delay,0)/scoped.length : 0;
   const meanProbability = scoped.length ? scoped.reduce((s,p) => s+p.probability,0)/scoped.length : 0;
-  function notify(message: string) { setToast(message); setTimeout(() => setToast(""),4000); }
+
+  // Dữ liệu cho trang Danh sách Chuyến bay (FE · Chuyến bay - STT 15)
+  const activeFlightSource: FlightItem[] = apiMode !== "demo" && liveFlights !== null ? liveFlights : demoFlights;
+  const uniqueOrigins = Array.from(new Set(activeFlightSource.map(f => f.origin))).sort();
+  const uniqueDests = Array.from(new Set(activeFlightSource.map(f => f.dest))).sort();
+  const uniqueCarriers = Array.from(new Set(activeFlightSource.map(f => f.op_unique_carrier))).sort();
+
+  const scopedFlights = activeFlightSource.filter(
+    f =>
+      (airport === "all" || f.origin === airport) &&
+      (destAirport === "all" || f.dest === destAirport) &&
+      (carrier === "all" || f.op_unique_carrier === carrier)
+  );
+  const filteredFlights = scopedFlights
+    .filter(
+      f =>
+        (flightStatus === "all" || f.delay_status === flightStatus) &&
+        `${f.flight_code} ${f.origin} ${f.dest} ${f.tail_num || ""} ${f.carrier_name}`
+          .toLowerCase()
+          .includes(search.toLowerCase())
+    )
+    .sort((a, b) =>
+      sort === "delay"
+        ? b.delay_minutes - a.delay_minutes
+        : sort === "distance"
+          ? b.distance - a.distance
+          : a.crs_dep_time.localeCompare(b.crs_dep_time)
+    );
+
+  const flightsDelayedCount = scopedFlights.filter(f => f.is_delayed === 1 || f.delay_minutes >= 15).length;
+  const flightsOnTimeCount = scopedFlights.length - flightsDelayedCount;
+  const flightsDelayRate = scopedFlights.length ? (flightsDelayedCount / scopedFlights.length) * 100 : 0;
+  const flightsAvgDelay = scopedFlights.length
+    ? scopedFlights.reduce((s, f) => s + f.delay_minutes, 0) / scopedFlights.length
+    : 0;
+  const flightsAvgDistance = scopedFlights.length
+    ? scopedFlights.reduce((s, f) => s + f.distance, 0) / scopedFlights.length
+    : 0;
+
   function refresh() {
+    if (isFlights) {
+      fetchIngestionFlights(false);
+      return;
+    }
     setBusy(true);
-    setTimeout(() => { setUpdated(new Intl.DateTimeFormat("vi-VN",{timeZone:"UTC",hour:"2-digit",minute:"2-digit",second:"2-digit"}).format(new Date())+" · xem lại demo (UTC)"); setBusy(false); notify("Đã tải lại dữ liệu mẫu. Chưa kết nối API."); },650);
+    setTimeout(() => { setUpdated(new Intl.DateTimeFormat("vi-VN",{timeZone:"UTC",hour:"2-digit",minute:"2-digit",second:"2-digit"}).format(new Date())+" · xem lại demo (UTC)"); setBusy(false); notify("Đã tải lại dữ liệu mẫu."); },650);
   }
+
   function exportCsv() {
-    const rows = forecast ? [["flight","origin","destination","departure_local","forecast_date","delay_minutes","delay_probability_percent","risk"],...filtered.map(p => [p.flight,p.origin,p.destination,p.time,"2026-11-07",p.delay,p.probability,riskLabels[riskOf(p.probability)]])] : [["airport","date","carrier_filter","flights","delay_rate_percent"],...selection.map(a => [a.code,day,carrier,Math.round(a.flights*factor),(a.rate*carrierRate).toFixed(1)])];
+    const rows = isFlights
+      ? [
+          ["flight_code", "fl_date", "carrier", "tail_num", "origin", "dest", "crs_dep_time", "crs_arr_time", "distance_miles", "delay_minutes", "delay_status"],
+          ...filteredFlights.map(f => [f.flight_code, f.fl_date, f.op_unique_carrier, f.tail_num || "", f.origin, f.dest, f.crs_dep_time, f.crs_arr_time, f.distance, f.delay_minutes, statusLabels[f.delay_status]]),
+        ]
+      : forecast
+        ? [["flight","origin","destination","departure_local","forecast_date","delay_minutes","delay_probability_percent","risk"],...filtered.map(p => [p.flight,p.origin,p.destination,p.time,"2026-11-07",p.delay,p.probability,riskLabels[riskOf(p.probability)]])]
+        : [["airport","date","carrier_filter","flights","delay_rate_percent"],...selection.map(a => [a.code,day,carrier,Math.round(a.flights*factor),(a.rate*carrierRate).toFixed(1)])];
     const blob = new Blob(["\uFEFF"+rows.map(row => row.join(",")).join("\r\n")],{type:"text/csv;charset=utf-8;"});
-    const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href=url; link.download=`flightlens-${view}-demo.csv`; link.click(); URL.revokeObjectURL(url); notify("Đã xuất CSV theo bộ lọc hiện tại.");
+    const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href=url; link.download=`flightlens-${view}-report.csv`; link.click(); URL.revokeObjectURL(url); notify("Đã xuất CSV theo bộ lọc hiện tại.");
   }
+
+  const pageTitle = isFlights ? "Danh sách chuyến bay" : forecast ? "Dự báo ngày mai" : "Tổng quan chuyến bay";
+  const pageEyebrow = isFlights ? "GIÁM SÁT LUỒNG CHUYẾN BAY · INGESTION" : forecast ? "NHÌN TRƯỚC MỘT BƯỚC" : "BỨC TRANH TOÀN CẢNH";
+  const pageSubtitle = isFlights
+    ? "Tra cứu, tìm kiếm và lọc trạng thái chuyến bay thời gian thực từ luồng Data Simulator."
+    : forecast
+      ? "Biến dữ liệu hôm nay thành sự chủ động cho ngày mai."
+      : "Mọi chuyển động trên bầu trời, trong một góc nhìn.";
+
   return <div className="app-shell">
     <aside className="sidebar">
       <Link href="/" className="brand"><span className="brand-mark"><Icon name="plane" size={25} /></span><span>flightlens<span className="brand-period">.</span><small>FLIGHT INTELLIGENCE</small></span></Link>
       <div className="workspace"><span className="workspace-icon"><Icon name="globe" /></span><div>US Flight Operations<small>Không gian làm việc</small></div><span className="workspace-chevron"><Icon name="chevron" size={15} /></span></div>
       <div className="nav-label">KHÔNG GIAN PHÂN TÍCH</div>
-      <nav aria-label="Điều hướng chính"><Link href="/" aria-label="Tổng quan" aria-current={!forecast ? "page" : undefined} className={!forecast ? "nav-item active" : "nav-item"}><Icon name="grid" />Tổng quan{!forecast && <span className="active-dot" />}</Link><Link href="/forecast" aria-label="Dự báo ngày mai" aria-current={forecast ? "page" : undefined} className={forecast ? "nav-item active" : "nav-item"}><Icon name="spark" />Dự báo ngày mai<span className="nav-new">AI</span></Link></nav>
-      <div className="sidebar-bottom"><div className="sidebar-card"><span className="orbit-icon"><Icon name="chart" size={25} /></span><strong>Mỗi chuyến bay,<br />một góc nhìn rõ hơn.</strong><p>Theo dõi hôm nay.<br />Chủ động cho ngày mai.</p><span className="sidebar-card-line" /></div><div className="demo-status"><span className="status-dot" />Chế độ demo UI<span>v1.0</span></div><div className="profile"><span className="avatar">H</span><div>Hiếu<small>Flight Delay Project</small></div><span className="profile-badge">HV</span></div></div>
+      <nav aria-label="Điều hướng chính">
+        <Link href="/" aria-label="Tổng quan" aria-current={isOverview ? "page" : undefined} className={isOverview ? "nav-item active" : "nav-item"}>
+          <Icon name="grid" />Tổng quan{isOverview && <span className="active-dot" />}
+        </Link>
+        <Link href="/flights" aria-label="Chuyến bay" aria-current={isFlights ? "page" : undefined} className={isFlights ? "nav-item active" : "nav-item"}>
+          <Icon name="plane" />Chuyến bay{isFlights ? <span className="active-dot" /> : <span className="nav-new">LIVE</span>}
+        </Link>
+        <Link href="/forecast" aria-label="Dự báo ngày mai" aria-current={forecast ? "page" : undefined} className={forecast ? "nav-item active" : "nav-item"}>
+          <Icon name="spark" />Dự báo ngày mai<span className="nav-new">AI</span>
+        </Link>
+      </nav>
+      <div className="sidebar-bottom"><div className="sidebar-card"><span className="orbit-icon"><Icon name="chart" size={25} /></span><strong>Mỗi chuyến bay,<br />một góc nhìn rõ hơn.</strong><p>Theo dõi hôm nay.<br />Chủ động cho ngày mai.</p><span className="sidebar-card-line" /></div><div className="demo-status"><span className="status-dot" />{apiMode !== "demo" ? `API: ${apiMode.toUpperCase()}` : "Chế độ demo UI"}<span>v1.0</span></div><div className="profile"><span className="avatar">V</span><div>Việt · Flight Team<small>Flight Delay Project</small></div><span className="profile-badge">VN</span></div></div>
     </aside>
-    <div className="main-shell"><header className="topbar"><div className="breadcrumbs">Workspace<span>/</span><strong>{forecast ? "Dự báo ngày mai" : "Tổng quan"}</strong></div><div className="topbar-right"><span className="sample-pill">DỮ LIỆU MẪU</span><span className="header-divider" /><Icon name="globe" size={17} /><span>Tiếng Việt</span><span className="mini-avatar">H</span></div></header>
+    <div className="main-shell"><header className="topbar"><div className="breadcrumbs">Workspace<span>/</span><strong>{pageTitle}</strong></div><div className="topbar-right"><span className="sample-pill">{isFlights && apiMode !== "demo" ? "API INGESTION ĐÃ KẾT NỐI" : "DỮ LIỆU MẪU"}</span><span className="header-divider" /><Icon name="globe" size={17} /><span>Tiếng Việt</span><span className="mini-avatar">V</span></div></header>
       <main className="main-content">
-        <div className="page-heading"><div><div className="eyebrow">{forecast ? "NHÌN TRƯỚC MỘT BƯỚC" : "BỨC TRANH TOÀN CẢNH"}</div><h1>{forecast ? "Dự báo ngày mai" : "Tổng quan chuyến bay"}<span className="heading-dot">.</span></h1><p>{forecast ? "Biến dữ liệu hôm nay thành sự chủ động cho ngày mai." : "Mọi chuyển động trên bầu trời, trong một góc nhìn."}</p></div><button className="button secondary" onClick={exportCsv} aria-label="Xuất báo cáo CSV"><Icon name="download" size={17} />Xuất báo cáo</button></div>
-        <div className="filter-bar"><div className="filters"><div className="filter-control"><Icon name="calendar" size={17} />{forecast ? <span>Ngày mai · 07/11/2026</span> : <select aria-label="Ngày dữ liệu" value={day} onChange={e => setDay(e.target.value)}><option>06/11/2026</option><option>05/11/2026</option><option>04/11/2026</option></select>}</div><div className="filter-control"><Icon name="plane" size={17} /><select aria-label="Sân bay" value={airport} onChange={e => setAirport(e.target.value)}><option value="all">Tất cả sân bay</option>{airports.map(a => <option key={a.code} value={a.code}>{a.code} · {a.city}</option>)}</select></div><div className="filter-control"><select aria-label="Hãng bay" value={carrier} onChange={e => setCarrier(e.target.value)}><option value="all">Tất cả hãng bay</option>{carriers.map(c => <option key={c.code} value={c.code}>{c.name}</option>)}</select></div></div><button className="refresh-button" onClick={refresh} disabled={busy} aria-label="Làm mới dữ liệu mẫu"><span className={busy ? "spinning" : ""}><Icon name="refresh" size={16} /></span>{busy ? "Đang tải…" : "Làm mới"}</button></div>
-        <div className="update-line"><span className="status-dot" /><span>Dữ liệu mẫu · Lần cập nhật: <strong>{updated}</strong></span><span className="update-divider">|</span><span>{forecast ? "Phiên bản mô hình minh họa: v1.2" : "Chu kỳ cập nhật dự kiến: 5 phút"}</span></div>
-        {forecast ? <>
+        <div className="page-heading">
+          <div>
+            <div className="eyebrow">{pageEyebrow}</div>
+            <h1>{pageTitle}<span className="heading-dot">.</span></h1>
+            <p>{pageSubtitle}</p>
+          </div>
+          <div style={{ display: "flex", gap: "10px" }}>
+            {isFlights && (
+              <button className="button secondary" onClick={triggerIngestionRun} disabled={busy} aria-label="Nạp batch mới từ Simulator">
+                <Icon name="refresh" size={17} />Thu thập batch mới (POST /run)
+              </button>
+            )}
+            <button className="button secondary" onClick={exportCsv} aria-label="Xuất báo cáo CSV">
+              <Icon name="download" size={17} />Xuất báo cáo
+            </button>
+          </div>
+        </div>
+
+        <div className="filter-bar">
+          <div className="filters">
+            <div className="filter-control">
+              <Icon name="calendar" size={17} />
+              {forecast ? (
+                <span>Ngày mai · 07/11/2026</span>
+              ) : isFlights ? (
+                <span>Chu kỳ nạp: 5 phút · Sliding Window</span>
+              ) : (
+                <select aria-label="Ngày dữ liệu" value={day} onChange={e => setDay(e.target.value)}>
+                  <option>06/11/2026</option>
+                  <option>05/11/2026</option>
+                  <option>04/11/2026</option>
+                </select>
+              )}
+            </div>
+            <div className="filter-control">
+              <Icon name="plane" size={17} />
+              <select aria-label="Sân bay đi" value={airport} onChange={e => setAirport(e.target.value)}>
+                <option value="all">Tất cả sân bay đi</option>
+                {isFlights
+                  ? uniqueOrigins.map(code => <option key={code} value={code}>Đi từ: {code}</option>)
+                  : airports.map(a => <option key={a.code} value={a.code}>{a.code} · {a.city}</option>)}
+              </select>
+            </div>
+            {isFlights && (
+              <div className="filter-control">
+                <select aria-label="Sân bay đến" value={destAirport} onChange={e => setDestAirport(e.target.value)}>
+                  <option value="all">Tất cả sân bay đến</option>
+                  {uniqueDests.map(code => <option key={code} value={code}>Đến: {code}</option>)}
+                </select>
+              </div>
+            )}
+            <div className="filter-control">
+              <select aria-label="Hãng bay" value={carrier} onChange={e => setCarrier(e.target.value)}>
+                <option value="all">Tất cả hãng bay</option>
+                {isFlights
+                  ? uniqueCarriers.map(code => <option key={code} value={code}>Hãng: {code}</option>)
+                  : carriers.map(c => <option key={c.code} value={c.code}>{c.name}</option>)}
+              </select>
+            </div>
+          </div>
+          <button className="refresh-button" onClick={refresh} disabled={busy} aria-label="Làm mới dữ liệu">
+            <span className={busy ? "spinning" : ""}><Icon name="refresh" size={16} /></span>{busy ? "Đang tải…" : "Làm mới"}
+          </button>
+        </div>
+
+        <div className="update-line">
+          <span className="status-dot" />
+          <span>
+            {isFlights && apiMode !== "demo"
+              ? <>Nguồn: <strong>API Ingestion ({apiMode})</strong> · Cập nhật: <strong>{updated}</strong></>
+              : <>Dữ liệu mẫu · Lần cập nhật: <strong>{updated}</strong></>}
+          </span>
+          <span className="update-divider">|</span>
+          <span>
+            {isFlights
+              ? batchMeta?.window_start !== undefined
+                ? `Window [${batchMeta.window_start}..${batchMeta.window_end}] · Mới: +${batchMeta.inserted_count ?? 0} · Đã lọc trùng: ${batchMeta.duplicate_count ?? 0}`
+                : "Chu kỳ Ingestion: 5 phút (window=100, slide=20)"
+              : forecast
+                ? "Phiên bản mô hình minh họa: v1.2"
+                : "Chu kỳ cập nhật dự kiến: 5 phút"}
+          </span>
+        </div>
+
+        {isFlights ? <>
+          {apiMode !== "demo" && apiReady === false && (
+            <section className="forecast-banner" style={{ background: "#fcf0eb", borderColor: "#f2d6c9" }}>
+              <span className="banner-icon" style={{ background: "#f7dfd4", color: "#c96a4a" }}><Icon name="alert" size={26} /></span>
+              <div>
+                <span className="banner-eyebrow" style={{ color: "#b86b52" }}>TRẠNG THÁI DATABASE · READY = FALSE</span>
+                <h2 style={{ color: "#7a3b26" }}>Database hiện đang trống (chưa có dữ liệu chuyến bay).</h2>
+                <p style={{ color: "#9c5840" }}>Nhấn nút &ldquo;Thu thập batch mới (POST /run)&rdquo; ở góc phải phía trên để Ingestion gọi Simulator và phục hồi dữ liệu ngay lập tức.</p>
+              </div>
+            </section>
+          )}
+
+          <section className="metrics" aria-label="Chỉ số chuyến bay">
+            <Metric
+              title="Tổng chuyến bay hiển thị"
+              value={number(scopedFlights.length)}
+              unit="chuyến"
+              icon="plane"
+              note={batchMeta?.total_stored ? `Tổng lưu trong DB: ${number(batchMeta.total_stored)} chuyến` : "Theo bộ lọc sân bay & hãng hiện tại"}
+            />
+            <Metric
+              title="Đúng giờ (< 15 phút)"
+              value={number(flightsOnTimeCount)}
+              unit="chuyến"
+              icon="check"
+              note={`Chiếm ${(100 - flightsDelayRate).toFixed(1)}% tổng số chuyến`}
+              color="teal"
+            />
+            <Metric
+              title="Chuyến bay trễ (≥ 15 phút)"
+              value={number(flightsDelayedCount)}
+              unit={`(${flightsDelayRate.toFixed(1)}%)`}
+              icon="alert"
+              note="Bao gồm trễ nhẹ và trễ nghiêm trọng"
+              color="coral"
+            />
+            <Metric
+              title="Độ trễ / Cự ly trung bình"
+              value={flightsAvgDelay.toFixed(1)}
+              unit="phút"
+              icon="clock"
+              note={`Cự ly bay TB: ${number(Math.round(flightsAvgDistance))} dặm`}
+              color="purple"
+            />
+          </section>
+
+          <div className="forecast-charts">
+            <section className="panel">
+              <div className="panel-heading">
+                <div>
+                  <h2>Mức độ trễ trung bình theo hãng hàng không</h2>
+                  <p>Tổng hợp trực tiếp từ danh sách chuyến bay đang lọc</p>
+                </div>
+                <span className="chart-unit">ĐƠN VỊ: PHÚT</span>
+              </div>
+              <div className="airport-bars">
+                {(uniqueCarriers.length ? uniqueCarriers.slice(0, 8) : ["AA", "DL", "UA", "WN"]).map(code => {
+                  const rows = scopedFlights.filter(f => f.op_unique_carrier === code);
+                  const val = rows.length ? rows.reduce((s, f) => s + f.delay_minutes, 0) / rows.length : 0;
+                  return (
+                    <div className="airport-bar" key={code}>
+                      <span className="airport-bar-value">{rows.length ? val.toFixed(1) : "—"}</span>
+                      <div className="airport-bar-track">
+                        <div style={{ height: `${Math.min(100, (val / 45) * 100)}%` }} className={val >= 20 ? "bar-coral" : "bar-teal"} />
+                      </div>
+                      <strong>{code}</strong>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+
+            <section className="panel risk-panel">
+              <div className="panel-heading">
+                <div>
+                  <h2>Phân bố trạng thái chuyến bay</h2>
+                  <p>Nhấn vào một trạng thái để lọc nhanh danh sách</p>
+                </div>
+                <Icon name="clock" size={19} />
+              </div>
+              <div className="risk-distribution">
+                {(["on_time", "moderate_delay", "severe_delay"] as const).map(st => {
+                  const count = scopedFlights.filter(f => f.delay_status === st).length;
+                  const badge = statusBadgeClass[st];
+                  return (
+                    <button
+                      className={`risk-row ${flightStatus === st ? "selected" : ""}`}
+                      key={st}
+                      onClick={() => setFlightStatus(flightStatus === st ? "all" : st)}
+                      aria-pressed={flightStatus === st}
+                    >
+                      <span className={`risk-symbol ${badge}`}>
+                        <Icon name={st === "severe_delay" ? "alert" : st === "on_time" ? "check" : "clock"} size={18} />
+                      </span>
+                      <span className="risk-row-text">
+                        <strong>{statusLabels[st]}</strong>
+                        <small>
+                          {st === "on_time"
+                            ? "Khởi hành đúng lịch trình hoặc trễ dưới 15 phút"
+                            : st === "moderate_delay"
+                              ? "Trễ từ 15 đến 44 phút"
+                              : "Trễ từ 45 phút trở lên"}
+                        </small>
+                      </span>
+                      <strong>{count}<small>chuyến</small></strong>
+                      <span
+                        className={`risk-mini-bar ${badge}`}
+                        style={{ width: `${scopedFlights.length ? (count / scopedFlights.length) * 100 : 0}%` }}
+                      />
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="panel-footnote">Cơ chế chống trùng lặp (Deduplication) tự động loại bỏ các chuyến bay trùng khi cửa sổ trượt.</div>
+            </section>
+          </div>
+
+          <section className="panel predictions-panel">
+            <div className="panel-heading">
+              <div>
+                <h2>Danh sách chi tiết chuyến bay <span className="count-pill">{filteredFlights.length}</span></h2>
+                <p>Tìm kiếm theo mã chuyến bay, số hiệu tàu bay (Tail Num), sân bay đi/đến hoặc lọc theo trạng thái trễ</p>
+              </div>
+              <div className="table-tools">
+                <label className="search-box">
+                  <Icon name="search" size={16} />
+                  <input
+                    placeholder="Tìm chuyến bay, tàu bay, sân bay…"
+                    aria-label="Tìm chuyến bay"
+                    value={search}
+                    onChange={e => setSearch(e.target.value)}
+                  />
+                </label>
+                <select aria-label="Lọc trạng thái" value={flightStatus} onChange={e => setFlightStatus(e.target.value)}>
+                  <option value="all">Tất cả trạng thái</option>
+                  <option value="on_time">Đúng giờ (&lt; 15p)</option>
+                  <option value="moderate_delay">Trễ nhẹ (15–44p)</option>
+                  <option value="severe_delay">Trễ nặng (≥ 45p)</option>
+                </select>
+                <select aria-label="Sắp xếp" value={sort} onChange={e => setSort(e.target.value)}>
+                  <option value="time">Giờ khởi hành</option>
+                  <option value="delay">Độ trễ giảm dần</option>
+                  <option value="distance">Cự ly giảm dần</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>CHUYẾN BAY</th>
+                    <th>TÀU BAY (TAIL)</th>
+                    <th>NGÀY BAY</th>
+                    <th>HÀNH TRÌNH</th>
+                    <th>GIỜ ĐI / ĐẾN (CRS)</th>
+                    <th>CỰ LY / THỜI GIAN</th>
+                    <th>MỨC ĐỘ DELAY</th>
+                    <th>TRẠNG THÁI</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredFlights.map(f => {
+                    const badge = statusBadgeClass[f.delay_status];
+                    return (
+                      <tr key={f.flight_key}>
+                        <td>
+                          <span className={`airline-mark airline-${f.op_unique_carrier}`}>{f.op_unique_carrier}</span>
+                          <strong>{f.flight_code}</strong>
+                        </td>
+                        <td className="tabular">{f.tail_num || "—"}</td>
+                        <td className="tabular">{f.fl_date}</td>
+                        <td>
+                          <span className="route">
+                            <strong>{f.origin}</strong>
+                            <Icon name="arrow" size={15} />
+                            <strong>{f.dest}</strong>
+                          </span>
+                        </td>
+                        <td className="tabular">
+                          {f.crs_dep_time} <span className="muted">→</span> {f.crs_arr_time}
+                        </td>
+                        <td className="tabular">
+                          {number(Math.round(f.distance))} <span className="muted">dặm ({Math.round(f.crs_elapsed_time)}p)</span>
+                        </td>
+                        <td>
+                          <strong className={f.delay_minutes >= 15 ? "coral-text" : ""}>
+                            +{f.delay_minutes}
+                          </strong>
+                          <span className="muted"> phút</span>
+                        </td>
+                        <td>
+                          <span className={`risk-badge ${badge}`}>
+                            <span />
+                            {statusLabels[f.delay_status]}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+
+              {!filteredFlights.length && (
+                <div className="empty-state">
+                  <Icon name="search" size={30} />
+                  <h3>Không có chuyến bay phù hợp</h3>
+                  <p>
+                    {apiMode !== "demo" && apiReady === false
+                      ? "Database hiện đang trống. Nhấn nút 'Thu thập batch mới (POST /run)' để nạp dữ liệu từ Simulator."
+                      : "Thử từ khóa tìm kiếm khác hoặc đặt lại bộ lọc."}
+                  </p>
+                  <button
+                    className="button secondary"
+                    onClick={() => {
+                      setAirport("all");
+                      setDestAirport("all");
+                      setCarrier("all");
+                      setFlightStatus("all");
+                      setSearch("");
+                    }}
+                  >
+                    Đặt lại bộ lọc
+                  </button>
+                </div>
+              )}
+            </div>
+
+            <div className="table-footer">
+              Hiển thị {filteredFlights.length} / {scopedFlights.length} chuyến bay trong phạm vi đã chọn
+              <span>
+                {apiMode !== "demo"
+                  ? `Kết nối trực tiếp API Ingestion (${apiMode})`
+                  : "Chế độ dữ liệu mẫu · Tự động chuyển sang API thật khi bật backend"}
+              </span>
+            </div>
+          </section>
+        </> : forecast ? <>
           <section className="forecast-banner"><span className="banner-icon"><Icon name="spark" size={26} /></span><div><span className="banner-eyebrow">DỰ BÁO CHO THỨ BẢY, 07 THÁNG 11</span><h2>Sẵn sàng cho hành trình ngày mai.</h2><p>Nhận diện sớm chuyến bay có nguy cơ trễ để chủ động lên kế hoạch.</p></div><div className="banner-date"><strong>07</strong><span>THÁNG 11, 2026</span></div><span className="banner-orbit" /></section>
           <section className="metrics" aria-label="Chỉ số dự báo"><Metric title="Chuyến bay được dự báo" value={number(scoped.length)} unit="chuyến" icon="plane" note="Trong phạm vi dữ liệu mẫu" /><Metric title="Delay dự kiến trung bình" value={forecastAvg.toFixed(1)} unit="phút" icon="clock" note="Trung bình các chuyến đã lọc" color="blue" /><Metric title="Chuyến bay nguy cơ cao" value={number(highCount)} unit="chuyến" icon="alert" note="Xác suất trễ từ 60%" color="coral" /><Metric title="Xác suất trễ trung bình" value={meanProbability.toFixed(1)} unit="%" icon="chart" note="Trung bình xác suất phân loại" color="purple" /></section>
           <div className="forecast-charts"><section className="panel"><div className="panel-heading"><div><h2>Delay dự kiến theo sân bay</h2><p>Số phút trễ trung bình tại sân bay khởi hành</p></div><span className="chart-unit">ĐƠN VỊ: PHÚT</span></div><div className="airport-bars">{selection.map(a => { const rows=scoped.filter(p => p.origin===a.code); const value=rows.length ? rows.reduce((s,p) => s+p.delay,0)/rows.length : 0; return <div className="airport-bar" key={a.code}><span className="airport-bar-value">{rows.length ? value.toFixed(1) : "—"}</span><div className="airport-bar-track"><div style={{height:`${value/45*100}%`}} className={value>=28 ? "bar-coral" : "bar-teal"} /></div><strong>{a.code}</strong></div>; })}</div></section><section className="panel risk-panel"><div className="panel-heading"><div><h2>Phân bố nguy cơ</h2><p>Xác suất chuyến bay trễ ≥ 15 phút</p></div><Icon name="spark" size={19} /></div><div className="risk-distribution">{(["high","medium","low"] as const).map(r => { const count=scoped.filter(p => riskOf(p.probability)===r).length; return <button className={`risk-row ${risk===r ? "selected" : ""}`} key={r} onClick={() => setRisk(risk===r ? "all" : r)} aria-pressed={risk===r}><span className={`risk-symbol ${r}`}><Icon name={r==="high" ? "alert" : r==="low" ? "check" : "clock"} size={18} /></span><span className="risk-row-text"><strong>{riskLabels[r]}</strong><small>{r==="high" ? "≥ 60%" : r==="medium" ? "30% – dưới 60%" : "Dưới 30%"}</small></span><strong>{count}<small>chuyến</small></strong><span className={`risk-mini-bar ${r}`} style={{width:`${scoped.length ? count/scoped.length*100 : 0}%`}} /></button>; })}</div><div className="panel-footnote">Chọn một nhóm để lọc danh sách bên dưới.</div></section></div>
