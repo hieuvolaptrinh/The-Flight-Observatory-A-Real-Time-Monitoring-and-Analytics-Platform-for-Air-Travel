@@ -1,90 +1,94 @@
-# fastapi-clean-architecture
+# Flight Data Simulator
 
-## description
-Base FastAPI project for applying general RestAPI Application cases.
-![openapi-docs](./doc/images/openapi-docs-v2.png)
+Giả lập luồng dữ liệu chuyến bay động bằng cách phát từng batch từ file CSV.
 
-## concept
-1. Minimal functionality.
-2. Convincing architecture.
-3. Easy to read.
-4. Compatibility.
-5. Versatility.
+## Cấu trúc
 
-## base models
-1. user
-2. post [user (1 : n) post]
-3. tag [post (n : n) tag]
-
-## integrated with
-1. Python3.9+
-2. Fastapi 0.78.0
-3. Database
-   1. MySQL5.7+
-   2. Migration with alembic
-   3. pytest with real DB
-   4. Load with two ways (eager, lazy)
-   5. Modeling with schema (1:1, 1:n, n:n)
-4. dependency-injector
-   1. service-repository pattern
-5. JWT authentication
-   1. role separation each endpoint
-6. Deployment
-   1. container environment(k8s, docker)
-   2. raw WAS(Web Application Server)
-
-## commands
-Install runtime dependencies with `python -m pip install -r requirements.txt`.
-For development and tests, use `python -m pip install -r requirements-dev.txt`.
-
-The backend no longer includes invoice image processing, OCR, or Gemini.
-`POST /api/v1/invoice/process-image` has been removed. Authentication, CRUD,
-invoice creation, and MinIO logo uploads remain available.
-
-Use a fresh virtual environment to reclaim space from previously installed OCR
-packages; installing the reduced requirements does not uninstall old packages.
-
-1. db(alembic)
-   1. `alembic upgrade head`: apply every migrations
-   2. `alembic downgrade base`: rollback every migrations
-   3. `alembic revision --autogenerate -m "revision_name"`: create new migration 
-   4. `alembic history`: get alembic revision history
-2. How to migration
-   1. Create or modify models from `app/model/*.py`
-   2. `alembic -x ENV=[dev|stage|prod] revision --autogenerate -m "revision_name"`
-   3. Check auto generated migration file from `app/migrations/versions/*.py`
-   4. `alembic -x ENV=[dev|stage|prod] upgrade head`  
-      If ENV does not exist, it will be applied to the test.
-3. server
-   1. `uvicorn app.main:app --reload`: base
-   2. options
-      1. host: `--host 0.0.0.0`
-      2. port: `--port 8000`
-4. test
-   1. `pytest`: base 
-   2. `pytest --cov=app --cov-report=term-missing`: coverage with stdout
-   3. `pytest --cov=app --cov-report=html`: coverage with html
-
-## sample env
-```dotenv
-# mysql case
-ENV=dev
-DB=mysql
-DB_USER=root
-DB_PASSWORD=qwer1234
-DB_HOST=localhost
-DB_PORT=3306
-
-# postgres case
-ENV=dev
-DB=postgresql
-DB_USER=gyu
-DB_PASSWORD=
-DB_HOST=localhost
-DB_PORT=5432
+```
+data-simulator/
+├── app/
+│   ├── __init__.py
+│   ├── main.py      # FastAPI app + endpoint GET /flights
+│   ├── config.py    # đọc biến môi trường
+│   └── loader.py    # đọc & chuẩn hóa CSV 1 lần lúc khởi động
+├── data/            # các file *.csv (T_ONTIME_REPORTING_*.csv)
+├── .env.example
+├── .env.local
+├── requirements.txt
+└── Dockerfile
 ```
 
-## references
-1. [FastAPI official docs](https://fastapi.tiangolo.com/)
-2. [alembic official tutorial](https://alembic.sqlalchemy.org/en/latest/tutorial.html)
-3. [Dependency Injector](https://python-dependency-injector.ets-labs.org/)
+## Cách chạy
+
+```bash
+# Tạo môi trường ảo
+python -m venv .venv
+.venv\Scripts\activate        # Windows
+# source .venv/bin/activate   # Linux/Mac
+
+pip install -r requirements.txt
+
+# Chạy server
+uvicorn app.main:app --reload --port 8000
+```
+
+## Biến môi trường
+
+| Biến | Mặc định | Mô tả |
+|------|----------|-------|
+| `CSV_PATH` | `./data` | File CSV hoặc thư mục chứa `*.csv` |
+| `BATCH_SIZE` | `100` | Số bản ghi trả về mỗi lần gọi API |
+
+## API
+
+### `GET /flights`
+
+Mỗi lần gọi tự động trả về batch kế tiếp từ dataset. Hết dữ liệu thì wrap về đầu.
+
+**Query params:**
+- `batch_size` *(tùy chọn)*: ghi đè BATCH_SIZE, từ 1 đến 1000
+
+**Response mẫu:**
+```json
+{
+  "fetched_at": "2025-01-01T00:00:00Z",
+  "cursor": 0,
+  "next_cursor": 100,
+  "batch_size": 100,
+  "total": 7000000,
+  "wrapped": false,
+  "data": [
+    {
+      "DAY_OF_WEEK": 1,
+      "FL_DATE": "2025-01-06",
+      "OP_UNIQUE_CARRIER": "AA",
+      "TAIL_NUM": "N102NN",
+      "OP_CARRIER_FL_NUM": "179",
+      "ORIGIN": "JFK",
+      "DEST": "SFO",
+      "CRS_DEP_TIME": "0829",
+      "CRS_ARR_TIME": "1222",
+      "CRS_ELAPSED_TIME": 413.0,
+      "DISTANCE": 2586.0,
+      ...
+    }
+  ]
+}
+```
+
+### `GET /`
+Health check — trả về trạng thái service và vị trí cursor hiện tại.
+
+## Docker
+
+```bash
+docker build -t flight-simulator .
+docker run -p 8000:8000 -v ./data:/app/data flight-simulator
+```
+
+## Ghi chú
+
+- Dữ liệu được đọc **1 lần** khi khởi động, không đọc lại mỗi request.
+- Cursor lưu trong bộ nhớ → reset về 0 khi restart service.
+- Simulator **không tạo dữ liệu delay** và **không gọi ML model**.
+- `fetched_at` là thời điểm thực tế gọi API (UTC), không phải giờ bay.
