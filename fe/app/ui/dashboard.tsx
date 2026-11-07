@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import {
   airports,
   carriers,
@@ -173,6 +173,7 @@ export default function Dashboard({ view }: { view: "overview" | "flights" | "fo
   const [serverMeta, setServerMeta] = useState<ServerFlightMeta | null>(null);
   const [apiReady, setApiReady] = useState<boolean | null>(null);
   const [apiMode, setApiMode] = useState<"gateway" | "ingestion" | "simulator" | "demo">("demo");
+  const activeBackendRef = useRef<{ mode: "ingestion" | "gateway" | "simulator"; baseUrl: string } | null>(null);
   const [batchMeta, setBatchMeta] = useState<{
     total_stored?: number;
     window_start?: number;
@@ -196,7 +197,7 @@ export default function Dashboard({ view }: { view: "overview" | "flights" | "fo
     setCurrentPage(1);
   }, [airport, destAirport, carrier, flightStatus, debouncedSearch, sort, pageSize]);
 
-  const fetchIngestionFlights = useCallback(async (silent = false) => {
+  const fetchIngestionFlights = useCallback(async (silent = false, forceRediscover = false) => {
     setBusy(true);
 
     // Xây dựng Query String đẩy toàn bộ Search, Filter, Sort, Pagination xuống Backend SQL
@@ -212,16 +213,30 @@ export default function Dashboard({ view }: { view: "overview" | "flights" | "fo
     if (debouncedSearch.trim()) params.set("search", debouncedSearch.trim());
 
     const qs = params.toString();
-    const ingestionCandidates = [
-      ...DIRECT_INGESTION_URLS.map(u => ({ mode: "ingestion" as const, url: `${u}/flights?${qs}` })),
-      { mode: "gateway" as const, url: `${API_BASE}/ingestion/flights?${qs}` },
-    ];
+
+    // Nếu trước đó đã xác định chỉ có Data Simulator (port 8000) đang bật và không ép dò lại:
+    // không gọi 3 request vô ích tới port 8004/8080 mỗi lần đổi filter!
+    if (!forceRediscover && activeBackendRef.current?.mode === "simulator") {
+      setBusy(false);
+      return;
+    }
+
+    const ingestionCandidates =
+      !forceRediscover &&
+      activeBackendRef.current &&
+      (activeBackendRef.current.mode === "ingestion" || activeBackendRef.current.mode === "gateway")
+        ? [{ mode: activeBackendRef.current.mode, baseUrl: activeBackendRef.current.baseUrl, url: `${activeBackendRef.current.baseUrl}/flights?${qs}` }]
+        : [
+            ...DIRECT_INGESTION_URLS.map(u => ({ mode: "ingestion" as const, baseUrl: u, url: `${u}/flights?${qs}` })),
+            { mode: "gateway" as const, baseUrl: `${API_BASE}/ingestion`, url: `${API_BASE}/ingestion/flights?${qs}` },
+          ];
 
     for (const candidate of ingestionCandidates) {
       try {
         const res = await fetch(candidate.url, { cache: "no-store" });
         if (!res.ok) continue;
         const json = await res.json();
+        activeBackendRef.current = { mode: candidate.mode, baseUrl: candidate.baseUrl };
         setApiMode(candidate.mode);
         setApiReady(Boolean(json.ready));
         const items: FlightItem[] = json?.output?.items || [];
@@ -248,7 +263,10 @@ export default function Dashboard({ view }: { view: "overview" | "flights" | "fo
         }
         return;
       } catch {
-        // try next endpoint
+        // Nếu endpoint đã nhớ bị tắt giữa chừng, xóa cache để dò lại
+        if (activeBackendRef.current?.baseUrl === candidate.baseUrl) {
+          activeBackendRef.current = null;
+        }
       }
     }
 
@@ -258,6 +276,7 @@ export default function Dashboard({ view }: { view: "overview" | "flights" | "fo
         const res = await fetch(`${simBase}/flights`, { cache: "no-store" });
         if (!res.ok) continue;
         const simJson = await res.json();
+        activeBackendRef.current = { mode: "simulator", baseUrl: simBase };
         const rawList: Record<string, unknown>[] = simJson.data || [];
         const fetchedAt = simJson.fetched_at || new Date().toISOString();
         const incoming = rawList.map((r, i) => normalizeSimulatorRecord(r, fetchedAt, i));
@@ -309,7 +328,8 @@ export default function Dashboard({ view }: { view: "overview" | "flights" | "fo
       try {
         const res = await fetch(url, { method: "POST" });
         if (res.ok) {
-          await fetchIngestionFlights(true);
+          activeBackendRef.current = null;
+          await fetchIngestionFlights(true, true);
           notify("Đã chạy POST /run (port 8004): nạp cửa sổ trượt & lưu vào DB thành công!");
           return;
         }
@@ -318,7 +338,7 @@ export default function Dashboard({ view }: { view: "overview" | "flights" | "fo
       }
     }
 
-    await fetchIngestionFlights(false);
+    await fetchIngestionFlights(false, true);
   }
 
   // Tự động gọi API tới Backend mỗi khi bộ lọc, từ khóa tìm kiếm, cách sắp xếp hoặc trang hiện tại thay đổi
@@ -450,7 +470,7 @@ export default function Dashboard({ view }: { view: "overview" | "flights" | "fo
 
   function refresh() {
     if (isFlights) {
-      fetchIngestionFlights(false);
+      fetchIngestionFlights(false, true);
       return;
     }
     setBusy(true);
