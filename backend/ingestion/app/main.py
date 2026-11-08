@@ -22,7 +22,9 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
         runner = JobRunner(settings.service_name, active_pipeline)
         app.state.runner = runner
         task = (
-            asyncio.create_task(runner.schedule(settings.job_interval_seconds))
+            asyncio.create_task(
+                runner.schedule(settings.job_interval_seconds, run_on_startup=settings.run_on_startup)
+            )
             if settings.scheduler_enabled else None
         )
         try:
@@ -36,7 +38,7 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
     app = FastAPI(
         title="Flight Ingestion Service",
         description="Polls sliding-window batches from data-simulator, normalizes & deduplicates flights, and persists to DB.",
-        version="1.0.0",
+        version="1.1.0",
         root_path=settings.root_path,
         lifespan=lifespan,
     )
@@ -62,7 +64,7 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
 
     @app.get("/results", response_model=Results, tags=["results"])
     @app.get("/flights", response_model=Results, tags=["results"])
-    def results(
+    async def results(
         origin: str | None = Query(default=None, description="Filter by origin airport IATA code"),
         dest: str | None = Query(default=None, description="Filter by destination airport IATA code"),
         carrier: str | None = Query(default=None, description="Filter by carrier code (e.g. AA, DL, UA, WN)"),
@@ -73,7 +75,8 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
         offset: int = Query(default=0, ge=0, description="Pagination offset"),
     ):
         runner: JobRunner = app.state.runner
-        return runner.get_results(
+        return await asyncio.to_thread(
+            runner.get_results,
             origin=origin,
             dest=dest,
             carrier=carrier,
@@ -85,10 +88,10 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
         )
 
     @app.delete("/flights", tags=["operations"])
-    def clear_flights():
+    async def clear_flights():
         """Clear all ingested flights from DB (useful for testing/demo reset)."""
         runner: JobRunner = app.state.runner
-        deleted = runner.pipeline.repository.clear_all()
+        deleted = await asyncio.to_thread(runner.pipeline.repository.clear_all)
         return {"status": "cleared", "deleted_records": deleted}
 
     @app.get("/jobs/latest", response_model=Job | None, tags=["operations"])

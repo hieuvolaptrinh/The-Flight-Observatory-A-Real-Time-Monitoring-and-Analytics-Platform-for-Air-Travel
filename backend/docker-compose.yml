@@ -59,6 +59,20 @@ services:
     networks:
       - backend
 
+  frontend:
+    build:
+      context: ../fe
+      args:
+        NEXT_PUBLIC_API_BASE_URL: "http://localhost:${GATEWAY_PORT:-2002}/api"
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${FRONTEND_PORT:-3000}:3000"
+    depends_on:
+      gateway:
+        condition: service_healthy
+    networks:
+      - backend
+
   analytics:
     <<: *worker
     build: ./analytics
@@ -85,16 +99,20 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      ingestion:
+        condition: service_healthy
     volumes:
+      - clustering_models:/service/models
       - ../data-simulator/data:/data-source:ro
     environment:
       <<: *postgres-client
       SERVICE_NAME: clustering
       ROOT_PATH: /api/clustering
-      SCHEDULER_ENABLED: "${CLUSTERING_SCHEDULER_ENABLED:-false}"
+      SCHEDULER_ENABLED: "${CLUSTERING_SCHEDULER_ENABLED:-true}"
+      RUN_ON_STARTUP: "${CLUSTERING_RUN_ON_STARTUP:-true}"
       JOB_INTERVAL_SECONDS: "${CLUSTERING_INTERVAL_SECONDS:-86400}"
       FALLBACK_CSV_PATH: /data-source/T_ONTIME_REPORTING_1.csv
-      MODEL_PATH: ./models/clustering_bundle.joblib
+      MODEL_PATH: /service/models/clustering_bundle.joblib
 
   prediction:
     <<: *worker
@@ -124,7 +142,12 @@ services:
       SERVICE_NAME: ingestion
       ROOT_PATH: /api/ingestion
       SCHEDULER_ENABLED: "${INGESTION_SCHEDULER_ENABLED:-true}"
+      RUN_ON_STARTUP: "${INGESTION_RUN_ON_STARTUP:-true}"
       JOB_INTERVAL_SECONDS: "${INGESTION_INTERVAL_SECONDS:-300}"
       SIMULATOR_BASE_URL: "${SIMULATOR_BASE_URL:-http://data-simulator:8000}"
       INGESTION_BATCH_SIZE: "${INGESTION_BATCH_SIZE:-5}"
       FALLBACK_CSV_PATH: /data-source/T_ONTIME_REPORTING_1.csv
+      TRIGGER_DOWNSTREAM_URLS: "${TRIGGER_DOWNSTREAM_URLS-http://clustering:8000/run}"
+
+volumes:
+  clustering_models:

@@ -24,13 +24,16 @@ class Settings(BaseModel):
     service_name: str = Field(default_factory=lambda: os.getenv("SERVICE_NAME", "clustering"))
     root_path: str = Field(default_factory=lambda: os.getenv("ROOT_PATH", ""))
     scheduler_enabled: bool = Field(default_factory=lambda: _env_bool("SCHEDULER_ENABLED", False))
+    run_on_startup: bool = Field(default_factory=lambda: _env_bool("RUN_ON_STARTUP", True))
     job_interval_seconds: float = Field(
         default_factory=lambda: float(os.getenv("JOB_INTERVAL_SECONDS", "86400")),
         gt=0,
         allow_inf_nan=False,
     )
     database_url: str = Field(default_factory=lambda: os.getenv("DATABASE_URL") or _DEFAULT_DB)
-    source_database_url: str = Field(default_factory=lambda: os.getenv("SOURCE_DATABASE_URL") or os.getenv("DATABASE_URL") or _DEFAULT_SOURCE_DB)
+    source_database_url: str = Field(
+        default_factory=lambda: os.getenv("SOURCE_DATABASE_URL") or os.getenv("DATABASE_URL") or _DEFAULT_SOURCE_DB
+    )
     fallback_csv_path: str = Field(default_factory=lambda: os.getenv("FALLBACK_CSV_PATH") or _DEFAULT_CSV)
     model_path: str = Field(default_factory=lambda: os.getenv("MODEL_PATH") or _DEFAULT_MODEL)
     n_clusters: int = Field(default_factory=lambda: int(os.getenv("N_CLUSTERS", "4")), ge=2, le=10)

@@ -1,6 +1,6 @@
 import asyncio
-import logging
 from datetime import datetime, timezone
+import logging
 from uuid import uuid4
 
 from app.pipeline import Pipeline
@@ -85,7 +85,9 @@ class JobRunner:
                 logger.info("Job finished: service=%s id=%s status=%s", self.service, job.id, job.status)
             return job
 
-    async def schedule(self, interval_seconds: float) -> None:
+    async def schedule(self, interval_seconds: float, run_on_startup: bool = True) -> None:
+        if not run_on_startup:
+            await asyncio.sleep(interval_seconds)
         while True:
             try:
                 await self.run_once(trigger="schedule")

@@ -3,17 +3,18 @@ Offline / On-demand Training & Feature Engineering for Flight Clustering (STT 11
 Can be run standalone:
     python -m app.train
 to build and save `models/clustering_bundle.joblib`.
-During normal operation (`POST /run`), Pipeline loads the pre-built model artifact without re-training.
+During normal operation (`POST /run`), Pipeline loads the pre-built model artifact without re-training
+and clusters the flights stored in PostgreSQL / SQLite (`ingested_flights`).
 """
 from __future__ import annotations
 
 import csv
+from datetime import datetime, timezone
 import hashlib
 import logging
 import math
-import sqlite3
-from datetime import datetime, timezone
 from pathlib import Path
+import sqlite3
 from typing import Any
 
 import joblib
@@ -102,7 +103,22 @@ CLUSTER_DEFINITIONS: list[dict[str, str]] = [
 ]
 
 
+def _normalize_date(raw: Any) -> str:
+    if not raw:
+        return "2025-01-06"
+    s = str(raw).strip()
+    if len(s) == 10 and s[4] == "-" and s[7] == "-":
+        return s
+    for fmt in ("%m/%d/%Y %I:%M:%S %p", "%m/%d/%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(s, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return s[:10]
+
+
 def _estimate_row_delay(origin: str, dest: str, dep_hour: int, distance: float, key: str) -> float:
+    """Canonical deterministic delay calculation matching data-simulator and ingestion."""
     digest = int(hashlib.md5(key.encode("utf-8")).hexdigest()[:8], 16)
     bucket = digest % 100
     hub_boost = (8 if origin in BUSY_HUBS else 0) + (5 if dest in BUSY_HUBS else 0)
@@ -118,8 +134,9 @@ def _estimate_row_delay(origin: str, dest: str, dep_hour: int, distance: float, 
 
 def load_flight_rows(settings: Settings) -> list[dict[str, Any]]:
     """
-    Attempt to load flight rows from source DB first; if fewer than 500 records exist in DB,
-    read up to `max_sample_rows` from the CSV dataset so clustering has rich nationwide coverage.
+    Load flight rows from the shared database (`ingested_flights`) first.
+    Uses DB rows whenever there are enough distinct origin airports to form clusters.
+    Falls back to local CSV only for standalone offline training when DB is empty.
     """
     rows: list[dict[str, Any]] = []
     src_url = settings.source_database_url
@@ -148,15 +165,28 @@ def load_flight_rows(settings: Settings) -> list[dict[str, Any]]:
                     )
                     rows = [dict(r) for r in cur.fetchall()]
     except Exception as exc:
-        logger.debug("Could not read enough rows from source DB (%s); using CSV dataset.", exc)
+        logger.debug("Could not read rows from source DB (%s): %s", src_url, exc)
 
-    if len(rows) >= 500:
+    unique_origins = {r["origin"] for r in rows if r.get("origin")}
+    if len(unique_origins) >= settings.n_clusters:
         return rows
 
     csv_path = Path(settings.fallback_csv_path)
     if not csv_path.exists():
-        raise FileNotFoundError(f"CSV dataset not found at {csv_path}")
+        if rows:
+            return rows
+        raise RuntimeError(
+            f"Database `ingested_flights` has insufficient airports ({len(unique_origins)}) "
+            f"and no fallback CSV exists at {csv_path}. Run Ingestion first."
+        )
 
+    logger.info(
+        "DB has %d rows (%d unique origins); reading offline training dataset from %s",
+        len(rows),
+        len(unique_origins),
+        csv_path,
+    )
+    rows = []
     with open(csv_path, newline="", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
         for idx, r in enumerate(reader):
@@ -166,12 +196,15 @@ def load_flight_rows(settings: Settings) -> list[dict[str, Any]]:
             dest = str(r.get("DEST") or "").strip().upper()
             if not origin or not dest:
                 continue
-            raw_dep = str(r.get("CRS_DEP_TIME") or "0").strip().split(".")[0]
-            dep_hour = int(f"{int(raw_dep):04d}"[:2]) if raw_dep.isdigit() else 12
+            fl_date = _normalize_date(r.get("FL_DATE"))
+            carrier = str(r.get("OP_UNIQUE_CARRIER") or "").strip().upper()
+            fl_num = str(r.get("OP_CARRIER_FL_NUM") or idx).strip().split(".")[0]
+            raw_dep = str(r.get("CRS_DEP_TIME") or "0").strip().split(".")[0].replace(":", "")
+            crs_dep_padded = f"{int(raw_dep):04d}" if raw_dep.isdigit() else "0000"
+            dep_hour = min(23, max(0, int(crs_dep_padded[:2])))
             distance = float(r.get("DISTANCE") or 0.0)
             elapsed = float(r.get("CRS_ELAPSED_TIME") or 0.0)
-            fl_num = str(r.get("OP_CARRIER_FL_NUM") or idx)
-            key = f"{r.get('FL_DATE','')}_{r.get('OP_UNIQUE_CARRIER','')}_{fl_num}_{origin}_{dest}_{raw_dep}"
+            key = f"{fl_date}_{carrier}_{fl_num}_{origin}_{dest}_{crs_dep_padded}"
             delay = _estimate_row_delay(origin, dest, dep_hour, distance, key)
             rows.append({
                 "origin": origin,
@@ -223,10 +256,14 @@ def aggregate_features(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]]
         rb["delay_sum"] += delay
         rb["delayed_cnt"] += is_delayed
 
+    # Adapt minimum flight threshold to dataset size so clustering works on both 100-row streaming windows and 60k-row datasets
+    min_airport_cnt = 5 if len(rows) >= 1000 else 1
+    min_route_cnt = 3 if len(rows) >= 1000 else 1
+
     airport_entities: list[dict[str, Any]] = []
     for code, b in airport_buckets.items():
         cnt = b["count"]
-        if cnt < 5:
+        if cnt < min_airport_cnt:
             continue
         airport_entities.append({
             "entity_type": "airport",
@@ -242,12 +279,11 @@ def aggregate_features(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]]
             "delay_rate_pct": round(b["delayed_cnt"] / cnt * 100.0, 1),
         })
 
-    # Keep top 120 busiest routes for route clustering analysis
     sorted_routes = sorted(route_buckets.items(), key=lambda kv: kv[1]["count"], reverse=True)[:120]
     route_entities: list[dict[str, Any]] = []
     for rcode, b in sorted_routes:
         cnt = b["count"]
-        if cnt < 3:
+        if cnt < min_route_cnt:
             continue
         route_entities.append({
             "entity_type": "route",
@@ -300,11 +336,6 @@ def train_and_save_model(settings: Settings | None = None) -> dict[str, Any]:
     pca = PCA(n_components=2, random_state=42)
     pca.fit(X_scaled)
 
-    # Map raw cluster indices deterministically to semantic IDs 0..k-1:
-    # 0 -> highest route_count/flight_count (Mega-Hub)
-    # 1 -> highest avg_distance among remaining (Long-Haul)
-    # 3 -> lowest avg_distance / flight_count (Regional Short-Haul)
-    # 2 -> Medium commercial airports
     centers_orig = scaler.inverse_transform(kmeans.cluster_centers_)
     remaining = set(range(k))
 
@@ -321,7 +352,7 @@ def train_and_save_model(settings: Settings | None = None) -> dict[str, Any]:
     raw_to_semantic = {raw_idx: sem_idx for sem_idx, raw_idx in enumerate(ordered_raw)}
 
     bundle = {
-        "model_version": "kmeans-v1.0",
+        "model_version": "kmeans-v1.1",
         "algorithm": "KMeans + StandardScaler + PCA(2D)",
         "n_clusters": k,
         "feature_cols": FEATURE_COLS,
