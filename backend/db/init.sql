@@ -2,19 +2,17 @@
 -- Automatically executed by PostgreSQL container on first startup.
 
 -- =============================================================================
--- 1. RAW DATABASE TABLES (Data Simulator Source & Sliding Window Cursor)
+-- 1. RAW DATABASE LAYER (Source of Truth for Data Simulator)
 -- =============================================================================
 
 CREATE TABLE IF NOT EXISTS raw_source_files (
     file_id SERIAL PRIMARY KEY,
     file_name TEXT NOT NULL,
-    file_path TEXT NOT NULL,
-    file_sha256 CHAR(64) UNIQUE NOT NULL,
-    file_size_bytes BIGINT NOT NULL,
+    file_sha256 TEXT NOT NULL UNIQUE,
     total_rows INTEGER NOT NULL DEFAULT 0,
     loaded_rows INTEGER NOT NULL DEFAULT 0,
-    status TEXT NOT NULL DEFAULT 'PENDING',
-    loaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    status TEXT NOT NULL DEFAULT 'LOADING',
+    loaded_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS raw_flights (
@@ -24,6 +22,7 @@ CREATE TABLE IF NOT EXISTS raw_flights (
     day_of_week TEXT,
     fl_date TEXT,
     op_unique_carrier TEXT,
+    carrier_name TEXT,
     tail_num TEXT,
     op_carrier_fl_num TEXT,
     origin_airport_id TEXT,
@@ -38,23 +37,24 @@ CREATE TABLE IF NOT EXISTS raw_flights (
     crs_arr_time TEXT,
     crs_elapsed_time TEXT,
     distance TEXT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_at TEXT NOT NULL,
     UNIQUE (file_id, row_number)
 );
 
-CREATE INDEX IF NOT EXISTS idx_raw_flights_file_row ON raw_flights(file_id, row_number);
+CREATE INDEX IF NOT EXISTS idx_raw_flights_seek ON raw_flights(file_id, row_number);
 
 CREATE TABLE IF NOT EXISTS raw_simulator_state (
     stream_name TEXT PRIMARY KEY,
+    file_id INTEGER NOT NULL REFERENCES raw_source_files(file_id) ON DELETE CASCADE,
     window_start INTEGER NOT NULL DEFAULT 0,
-    window_size INTEGER NOT NULL DEFAULT 100,
-    slide_step INTEGER NOT NULL DEFAULT 20,
+    default_window_size INTEGER NOT NULL DEFAULT 100,
+    default_step INTEGER NOT NULL DEFAULT 100,
     total_requests BIGINT NOT NULL DEFAULT 0,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    last_served_at TEXT
 );
 
 -- =============================================================================
--- 2. CLEAN DATABASE TABLES (Ingestion, Clustering & Prediction)
+-- 2. CLEAN INGESTION LAYER (Normalized, Deduplicated & Enriched Flights)
 -- =============================================================================
 
 CREATE TABLE IF NOT EXISTS ingested_flights (
@@ -101,6 +101,10 @@ CREATE TABLE IF NOT EXISTS ingestion_batches (
     total_stored INTEGER NOT NULL,
     created_at TEXT NOT NULL
 );
+
+-- =============================================================================
+-- 3. CLUSTERING LAYER (Unsupervised Airport & Route Archetypes)
+-- =============================================================================
 
 CREATE TABLE IF NOT EXISTS clustering_runs (
     run_id TEXT PRIMARY KEY,
@@ -164,22 +168,26 @@ CREATE TABLE IF NOT EXISTS cluster_assignments (
 CREATE INDEX IF NOT EXISTS idx_cluster_assign_run ON cluster_assignments(run_id, entity_type);
 CREATE INDEX IF NOT EXISTS idx_cluster_assign_cluster ON cluster_assignments(cluster_id);
 
+-- =============================================================================
+-- 4. PREDICTION & CLASSIFICATION LAYER (Delay Regression & Risk Classification)
+-- =============================================================================
+
 CREATE TABLE IF NOT EXISTS prediction_runs (
     run_id TEXT PRIMARY KEY,
     model_version TEXT NOT NULL,
-    regression_algorithm TEXT NOT NULL,
-    classification_algorithm TEXT NOT NULL,
-    source_flights_count INTEGER NOT NULL,
-    predicted_flights_count INTEGER NOT NULL,
+    regressor_algorithm TEXT NOT NULL,
+    classifier_algorithm TEXT NOT NULL,
+    total_predicted INTEGER NOT NULL,
+    predicted_delayed_count INTEGER NOT NULL,
+    predicted_delay_rate_pct REAL NOT NULL,
+    avg_predicted_delay_minutes REAL NOT NULL,
+    avg_actual_delay_minutes REAL NOT NULL,
+    mae REAL NOT NULL,
+    rmse REAL NOT NULL,
+    accuracy_pct REAL NOT NULL,
     high_risk_count INTEGER NOT NULL,
     medium_risk_count INTEGER NOT NULL,
     low_risk_count INTEGER NOT NULL,
-    avg_predicted_delay REAL NOT NULL,
-    avg_delay_probability REAL NOT NULL,
-    metrics_json TEXT NOT NULL,
-    feature_importance_json TEXT NOT NULL,
-    risk_by_carrier_json TEXT NOT NULL,
-    risk_by_hour_json TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
 
@@ -188,28 +196,28 @@ CREATE INDEX IF NOT EXISTS idx_prediction_runs_created ON prediction_runs(create
 CREATE TABLE IF NOT EXISTS flight_predictions (
     run_id TEXT NOT NULL REFERENCES prediction_runs(run_id) ON DELETE CASCADE,
     flight_key TEXT NOT NULL,
-    flight_code TEXT NOT NULL,
     fl_date TEXT NOT NULL,
+    flight_code TEXT NOT NULL,
     op_unique_carrier TEXT NOT NULL,
-    carrier_name TEXT NOT NULL,
+    carrier_name TEXT,
     origin TEXT NOT NULL,
     dest TEXT NOT NULL,
     route TEXT NOT NULL,
     crs_dep_time TEXT,
     dep_hour INTEGER,
-    distance REAL NOT NULL,
-    crs_elapsed_time REAL NOT NULL,
+    distance REAL,
+    crs_elapsed_time REAL,
     actual_delay_minutes REAL NOT NULL,
     actual_delay_status TEXT NOT NULL,
     predicted_delay_minutes REAL NOT NULL,
     delay_probability REAL NOT NULL,
     predicted_label TEXT NOT NULL,
     risk_level TEXT NOT NULL,
-    top_risk_factors_json TEXT NOT NULL,
+    top_factors_json TEXT NOT NULL,
     created_at TEXT NOT NULL,
     PRIMARY KEY (run_id, flight_key)
 );
 
-CREATE INDEX IF NOT EXISTS idx_flight_pred_run_risk ON flight_predictions(run_id, risk_level);
-CREATE INDEX IF NOT EXISTS idx_flight_pred_origin ON flight_predictions(origin);
-CREATE INDEX IF NOT EXISTS idx_flight_pred_carrier ON flight_predictions(op_unique_carrier);
+CREATE INDEX IF NOT EXISTS idx_flight_predictions_run ON flight_predictions(run_id);
+CREATE INDEX IF NOT EXISTS idx_flight_predictions_risk ON flight_predictions(run_id, risk_level);
+CREATE INDEX IF NOT EXISTS idx_flight_predictions_route ON flight_predictions(run_id, route);
