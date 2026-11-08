@@ -13,6 +13,7 @@ services:
     volumes:
       - analytics_data:/var/lib/postgresql/data
       - ../ingestion/db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ../db/init.sql:/docker-entrypoint-initdb.d/02-legacy.sql:ro
       - ../ingestion/db/import_csv.sql:/opt/analytics-db/import_csv.sql:ro
       - ../../data-simulator/data:/data-source:ro
     healthcheck:

@@ -32,6 +32,8 @@ docker compose -f backend/database/docker-compose.yml exec postgres psql -X -U a
 
 Pipeline Ingestion nạp dữ liệu Simulator vào `flight_data.flights` ngay khi khởi động, rồi lặp lại mỗi 300 giây với mặc định 5 chuyến một lô. Con trỏ nằm trong `flight_data.simulator_offsets` và được commit cùng các chuyến. Import CSV là cách nạp nhanh lịch sử cho demo. `csv_path` trỏ đến tệp trong thư mục `/data-source` được mount vào container `postgres`.
 
+Mỗi lô Simulator cũng cập nhật `ingested_flights` và `ingestion_batches` trong cùng giao dịch để giữ API danh sách chuyến bay và nguồn dữ liệu Clustering. Nhãn trễ mô phỏng của danh sách chuyến bay được lưu riêng với `flight_data.flight_outcomes`, nơi dành cho kết quả quan sát thực tế.
+
 ```sql
 SELECT flight_date, day_of_week, carrier_code, flight_number, origin, dest,
        scheduled_dep_local, scheduled_arr_local, scheduled_elapsed_min, distance_miles

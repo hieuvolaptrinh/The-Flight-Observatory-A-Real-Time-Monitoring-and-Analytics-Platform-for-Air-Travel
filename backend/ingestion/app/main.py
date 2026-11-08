@@ -62,14 +62,14 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
 
     @app.get("/results", response_model=Results, tags=["results"])
     @app.get("/flights", response_model=Results, tags=["results"])
-    async def results(
+    def results(
         origin: str | None = Query(default=None, description="Filter by origin airport IATA code"),
         dest: str | None = Query(default=None, description="Filter by destination airport IATA code"),
         carrier: str | None = Query(default=None, description="Filter by carrier code (e.g. AA, DL, UA, WN)"),
         status: str | None = Query(default=None, description="Filter by delay_status: on_time, moderate_delay, severe_delay"),
         search: str | None = Query(default=None, description="Search by flight code, airport, carrier, or tail number"),
         sort: str | None = Query(default="time", description="Sort by: time, delay, distance"),
-        limit: int = Query(default=200, ge=1, le=1000, description="Max records to return"),
+        limit: int = Query(default=5, ge=1, le=1000, description="Max records to return"),
         offset: int = Query(default=0, ge=0, description="Pagination offset"),
     ):
         runner: JobRunner = app.state.runner
@@ -85,7 +85,7 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
         )
 
     @app.delete("/flights", tags=["operations"])
-    async def clear_flights():
+    def clear_flights():
         """Clear all ingested flights from DB (useful for testing/demo reset)."""
         runner: JobRunner = app.state.runner
         deleted = runner.pipeline.repository.clear_all()

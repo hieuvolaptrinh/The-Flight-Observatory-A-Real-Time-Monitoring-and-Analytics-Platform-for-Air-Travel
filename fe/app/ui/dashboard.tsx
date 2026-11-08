@@ -53,9 +53,9 @@ function TrendChart({ rate, day }: { rate: number; day: string }) {
   </svg></div>;
 }
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:8080/api";
-const DIRECT_INGESTION_URLS = ["http://127.0.0.1:8004", "http://localhost:8004"];
-const DIRECT_SIMULATOR_URLS = ["http://127.0.0.1:8000", "http://localhost:8000"];
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:2002/api";
+const DIRECT_INGESTION_URLS = ["http://127.0.0.1:2004", "http://127.0.0.1:8004", "http://localhost:8004"];
+const DIRECT_SIMULATOR_URLS = ["http://127.0.0.1:2003", "http://127.0.0.1:8000", "http://localhost:8000"];
 
 const CARRIER_MAP: Record<string, string> = {
   AA: "American Airlines",
@@ -215,7 +215,7 @@ export default function Dashboard({ view }: { view: "overview" | "flights" | "fo
     const qs = params.toString();
 
     // Nếu trước đó đã xác định chỉ có Data Simulator (port 8000) đang bật và không ép dò lại:
-    // không gọi 3 request vô ích tới port 8004/8080 mỗi lần đổi filter!
+    // Dùng lại backend đã kết nối khi người dùng đổi bộ lọc.
     if (!forceRediscover && activeBackendRef.current?.mode === "simulator") {
       setBusy(false);
       return;

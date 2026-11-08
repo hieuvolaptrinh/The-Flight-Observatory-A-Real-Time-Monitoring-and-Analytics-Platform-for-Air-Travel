@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from app.schedule import Flight, ReplayPosition, save_flight
+
 logger = logging.getLogger(__name__)
 
 SCHEMA_SQL = """
@@ -65,6 +67,7 @@ class FlightRepository:
         self.database_url = database_url
         self.is_postgres = database_url.startswith(("postgresql://", "postgres://"))
         self.storage_type = "postgresql" if self.is_postgres else "sqlite"
+        self.has_schedule = False
         if not self.is_postgres:
             raw_path = database_url.replace("sqlite:///", "")
             self.sqlite_path = Path(raw_path).resolve()
@@ -86,16 +89,26 @@ class FlightRepository:
             with self._connect_postgres() as conn:
                 with conn.cursor() as cur:
                     cur.execute(SCHEMA_SQL)
+                    cur.execute("SELECT to_regclass('flight_data.simulator_offsets') IS NOT NULL AS enabled")
+                    self.has_schedule = cur.fetchone()["enabled"]
                 conn.commit()
         else:
             with self._connect_sqlite() as conn:
                 conn.executescript(SCHEMA_SQL)
                 conn.commit()
 
+    def simulator_offset(self, source: str) -> int:
+        with self._connect_postgres() as conn, conn.cursor() as cur:
+            cur.execute("SELECT next_start FROM flight_data.simulator_offsets WHERE source_url = %s", (source,))
+            row = cur.fetchone()
+            return row["next_start"] if row else 0
+
     def insert_batch(
         self,
         records: list[dict[str, Any]],
         batch_meta: dict[str, Any],
+        scheduled: tuple[Flight, ...] = (),
+        replay: ReplayPosition | None = None,
     ) -> dict[str, int]:
         """
         Insert normalized flight records with deduplication on flight_key.
@@ -121,6 +134,18 @@ class FlightRepository:
             """
             with self._connect_postgres() as conn:
                 with conn.cursor() as cur:
+                    if replay is not None:
+                        cur.execute("""
+                            INSERT INTO flight_data.simulator_offsets (source_url, next_start) VALUES (%s, 0)
+                            ON CONFLICT (source_url) DO NOTHING
+                        """, (replay.source,))
+                        cur.execute("""
+                            SELECT next_start FROM flight_data.simulator_offsets WHERE source_url = %s FOR UPDATE
+                        """, (replay.source,))
+                        if cur.fetchone()["next_start"] != replay.start:
+                            raise RuntimeError("Another ingestion run advanced the simulator offset")
+                    for flight in scheduled:
+                        save_flight(cur, flight)
                     for r in records:
                         cur.execute(sql, [r.get(c) for c in cols])
                         inserted += cur.rowcount if cur.rowcount > 0 else 0
@@ -146,6 +171,11 @@ class FlightRepository:
                             batch_meta["created_at"],
                         ),
                     )
+                    if replay is not None:
+                        cur.execute("""
+                            UPDATE flight_data.simulator_offsets SET next_start = %s, updated_at = statement_timestamp()
+                            WHERE source_url = %s
+                        """, (replay.next_start, replay.source))
                 conn.commit()
         else:
             placeholders = ", ".join(["?"] * len(cols))
@@ -334,6 +364,7 @@ class FlightRepository:
             "returned_count": len(items),
             "limit": limit,
             "offset": offset,
+            "has_more": offset + len(items) < filtered_count,
             "sort": sort_key,
             "delayed_count": delayed_count,
             "on_time_count": int(stats_row.get("on_time_count") or 0),

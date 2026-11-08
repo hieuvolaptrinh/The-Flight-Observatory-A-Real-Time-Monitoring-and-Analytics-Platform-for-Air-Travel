@@ -22,10 +22,13 @@ PostgreSQL riêng dùng lại volume Compose `analytics_data`. Nếu PostgreSQL 
 docker compose -f backend/docker-compose.yml stop ingestion analytics
 ```
 
+Nếu từng dùng cấu hình `main` với volume `postgres_data` và database `flight_db`, dữ liệu đó vẫn nằm trong volume cũ. Cần sao lưu và khôi phục các bảng cần giữ vào `analytics_db` khi chuyển dữ liệu giữa hai volume.
+
 PostgreSQL áp dụng `schema.sql` tự động khi tạo volume mới. Với volume có sẵn từ phiên bản schema cũ, có thể áp dụng lại script sau khi container đã chạy:
 
 ```powershell
 docker compose -f backend/database/docker-compose.yml exec -T postgres psql -X -v ON_ERROR_STOP=1 -U analytics -d analytics_db -f /docker-entrypoint-initdb.d/01-schema.sql
+docker compose -f backend/database/docker-compose.yml exec -T postgres psql -X -v ON_ERROR_STOP=1 -U analytics -d analytics_db -f /docker-entrypoint-initdb.d/02-legacy.sql
 ```
 
 Xem [cách nạp CSV](../ingestion/db/README.md) và [bảng cổng backend](../README.md).
