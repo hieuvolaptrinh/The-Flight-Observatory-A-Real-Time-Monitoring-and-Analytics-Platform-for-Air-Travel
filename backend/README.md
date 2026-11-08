@@ -49,6 +49,7 @@ docker compose up -d --build analytics
 
 Chỉ gateway publish cổng ra máy chủ, mặc định 127.0.0.1:8080.
 Compose chờ healthcheck của các service trước khi khởi động gateway.
+Container `ingestion` chứa PostgreSQL cho schema phân tích lịch bay. Xem [schema và cách nạp CSV](ingestion/db/README.md).
 
 | Service | Swagger qua gateway | API kết quả |
 | --- | --- | --- |
