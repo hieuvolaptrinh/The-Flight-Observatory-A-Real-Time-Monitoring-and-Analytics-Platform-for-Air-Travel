@@ -6,7 +6,7 @@ Từ gốc repo, chạy Simulator, Ingestion, PostgreSQL và Analytics qua gatew
 docker compose -f backend/docker-compose.yml up -d --build --wait
 ```
 
-Swagger ở `http://localhost:8080/api/analytics/docs`. Ingestion nạp 5 chuyến mỗi 300 giây theo mặc định. Có thể kiểm tra bản ghi đã lưu bằng `GET /api/ingestion/flights` hoặc nạp một lô ngay bằng `POST /api/ingestion/run`.
+Swagger ở `http://localhost:2002/api/analytics/docs`. Ingestion nạp 5 chuyến mỗi 300 giây theo mặc định. Có thể kiểm tra bản ghi đã lưu bằng `GET /api/ingestion/flights` hoặc nạp một lô ngay bằng `POST /api/ingestion/run`.
 
 | Phương thức và đường dẫn dưới `/api/analytics` | Kết quả |
 | --- | --- |

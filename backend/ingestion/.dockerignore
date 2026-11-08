@@ -2,8 +2,5 @@
 !requirements.txt
 !app/
 !app/**
-!start-ingestion.sh
-!db/
-!db/*.sql
 **/__pycache__/
 **/*.py[cod]

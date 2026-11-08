@@ -1,5 +1,8 @@
 name: flight-delay-backend
 
+include:
+  - ./database/docker-compose.yml
+
 x-worker: &worker
   restart: unless-stopped
   init: true
@@ -8,12 +11,20 @@ x-worker: &worker
   networks:
     - backend
 
+x-postgres-client: &postgres-client
+  DATABASE_URL: ""
+  PGHOST: postgres
+  PGPORT: "5432"
+  PGDATABASE: "${ANALYTICS_POSTGRES_DB:-analytics_db}"
+  PGUSER: "${ANALYTICS_POSTGRES_USER:-analytics}"
+  PGPASSWORD: "${ANALYTICS_POSTGRES_PASSWORD:-analytics}"
+
 services:
   data-simulator:
     build: ../data-simulator
     restart: unless-stopped
     ports:
-      - "127.0.0.1:${SIMULATOR_PORT:-8000}:8000"
+      - "127.0.0.1:${SIMULATOR_PORT:-2003}:8000"
     environment:
       CSV_PATH: /app/data/T_ONTIME_REPORTING_1.csv
       WINDOW_SIZE: "${SIMULATOR_WINDOW_SIZE:-100}"
@@ -33,7 +44,7 @@ services:
     build: ./gateway
     restart: unless-stopped
     ports:
-      - "127.0.0.1:${GATEWAY_PORT:-8080}:8080"
+      - "127.0.0.1:${GATEWAY_PORT:-2002}:8080"
     environment:
       FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:3000}
     depends_on:
@@ -51,25 +62,26 @@ services:
   analytics:
     <<: *worker
     build: ./analytics
+    ports:
+      - "127.0.0.1:${ANALYTICS_PORT:-2005}:8000"
     depends_on:
-      ingestion:
+      postgres:
         condition: service_healthy
     env_file:
       - path: ./analytics/.env
         required: false
     environment:
+      <<: *postgres-client
       SERVICE_NAME: analytics
       ROOT_PATH: /api/analytics
       SCHEDULER_ENABLED: "${ANALYTICS_SCHEDULER_ENABLED:-true}"
       JOB_INTERVAL_SECONDS: "${ANALYTICS_INTERVAL_SECONDS:-300}"
-      PGHOST: ingestion
-      PGDATABASE: "${ANALYTICS_POSTGRES_DB:-analytics_db}"
-      PGUSER: "${ANALYTICS_POSTGRES_USER:-analytics}"
-      PGPASSWORD: "${ANALYTICS_POSTGRES_PASSWORD:-analytics}"
 
   clustering:
     <<: *worker
     build: ./clustering
+    ports:
+      - "127.0.0.1:${CLUSTERING_PORT:-2006}:8000"
     environment:
       SERVICE_NAME: clustering
       ROOT_PATH: /api/clustering
@@ -79,6 +91,8 @@ services:
   prediction:
     <<: *worker
     build: ./prediction
+    ports:
+      - "127.0.0.1:${PREDICTION_PORT:-2007}:8000"
     environment:
       SERVICE_NAME: prediction
       ROOT_PATH: /api/prediction
@@ -88,27 +102,18 @@ services:
   ingestion:
     <<: *worker
     build: ./ingestion
-    stop_grace_period: 45s
+    ports:
+      - "127.0.0.1:${INGESTION_PORT:-2004}:8000"
     depends_on:
+      postgres:
+        condition: service_healthy
       data-simulator:
         condition: service_healthy
-    volumes:
-      - ../data-simulator/data:/data-source:ro
-      - analytics_data:/var/lib/postgresql/data
     environment:
+      <<: *postgres-client
       SERVICE_NAME: ingestion
       ROOT_PATH: /api/ingestion
       SCHEDULER_ENABLED: "${INGESTION_SCHEDULER_ENABLED:-true}"
       JOB_INTERVAL_SECONDS: "${INGESTION_INTERVAL_SECONDS:-300}"
       SIMULATOR_BASE_URL: "${SIMULATOR_BASE_URL:-http://data-simulator:8000}"
       INGESTION_BATCH_SIZE: "${INGESTION_BATCH_SIZE:-5}"
-      POSTGRES_USER: "${ANALYTICS_POSTGRES_USER:-analytics}"
-      POSTGRES_PASSWORD: "${ANALYTICS_POSTGRES_PASSWORD:-analytics}"
-      POSTGRES_DB: "${ANALYTICS_POSTGRES_DB:-analytics_db}"
-
-volumes:
-  analytics_data:
-
-networks:
-  backend:
-    driver: bridge

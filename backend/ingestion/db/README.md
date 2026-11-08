@@ -1,6 +1,6 @@
 # PostgreSQL cho Flight Analytics
 
-PostgreSQL 16 chạy cùng FastAPI trong container `ingestion`. Container tạo database `analytics_db` và áp dụng `schema.sql` trước khi khởi động FastAPI. Các service trong mạng Compose có thể kết nối tới `ingestion:5432`. Cổng này chỉ dùng trong mạng Docker. Container dùng lại volume `analytics_data`, kể cả khi volume đã được tạo lúc DB còn nằm trong container `analytics`.
+PostgreSQL 16 chạy trong container `postgres`. Các service trong mạng Compose kết nối tới `postgres:5432`, còn ứng dụng chạy bằng Miniconda kết nối tới `127.0.0.1:2001`. Xem [cách khởi động và chuyển volume cũ](../../database/README.md).
 
 Mỗi bản ghi `flight_data.flights` là một chặng bay theo lịch. Dữ liệu lịch bay đi vào `flight_data`. Kết quả mà API Analytics đọc nằm trong `analytics`.
 
@@ -24,16 +24,13 @@ Chạy từ thư mục gốc repo bằng PowerShell. Ví dụ dùng thông tin P
 
 Tên database, user và mật khẩu được dùng để khởi tạo PostgreSQL khi volume còn trống. Khi tái sử dụng volume, dùng thông tin của lần khởi tạo đó.
 
-Nếu container `analytics` cũ đang chạy PostgreSQL, dừng nó trước lần chuyển đầu tiên để giải phóng volume. Lệnh `up` bên dưới khởi động lại Analytics với image API và đưa PostgreSQL lên trong Ingestion.
-
 ```powershell
-docker compose -f backend/docker-compose.yml stop analytics
-docker compose -f backend/docker-compose.yml up -d --build --wait ingestion analytics
-docker compose -f backend/docker-compose.yml exec -T ingestion psql -X -v csv_path=/data-source/T_ONTIME_REPORTING_1.csv -U analytics -d analytics_db -f /opt/analytics-db/import_csv.sql
-docker compose -f backend/docker-compose.yml exec ingestion psql -X -U analytics -d analytics_db
+docker compose -f backend/database/docker-compose.yml up -d --wait
+docker compose -f backend/database/docker-compose.yml exec -T postgres psql -X -v csv_path=/data-source/T_ONTIME_REPORTING_1.csv -U analytics -d analytics_db -f /opt/analytics-db/import_csv.sql
+docker compose -f backend/database/docker-compose.yml exec postgres psql -X -U analytics -d analytics_db
 ```
 
-Pipeline Ingestion nạp dữ liệu Simulator vào `flight_data.flights` ngay khi khởi động, rồi lặp lại mỗi 300 giây với mặc định 5 chuyến một lô. Con trỏ nằm trong `flight_data.simulator_offsets` và được commit cùng các chuyến. Import CSV là cách nạp nhanh lịch sử cho demo. `csv_path` trỏ đến tệp trong thư mục `/data-source` được mount vào container `ingestion`.
+Pipeline Ingestion nạp dữ liệu Simulator vào `flight_data.flights` ngay khi khởi động, rồi lặp lại mỗi 300 giây với mặc định 5 chuyến một lô. Con trỏ nằm trong `flight_data.simulator_offsets` và được commit cùng các chuyến. Import CSV là cách nạp nhanh lịch sử cho demo. `csv_path` trỏ đến tệp trong thư mục `/data-source` được mount vào container `postgres`.
 
 ```sql
 SELECT flight_date, day_of_week, carrier_code, flight_number, origin, dest,
