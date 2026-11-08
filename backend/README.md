@@ -13,6 +13,7 @@ backend/
   clustering/
   prediction/
   ingestion/
+  database/              # Compose chạy riêng PostgreSQL
   requirements.txt       # Dependencies runtime của cả 4 service Python
   docker-compose.yml
   .env.example
@@ -47,17 +48,26 @@ Sau khi sửa source, build lại service tương ứng:
 docker compose up -d --build analytics
 ```
 
-Chỉ gateway publish cổng ra máy chủ, mặc định 127.0.0.1:8080.
-Compose chờ healthcheck của các service trước khi khởi động gateway.
+Compose backend dùng chung PostgreSQL với [Compose chạy riêng database](database/README.md). Các cổng mặc định sau chỉ bind vào `127.0.0.1` trên máy chủ. Có thể đổi trong `backend/.env`.
+
+| Service | Cổng trên máy | Cổng trong container |
+| --- | --- | --- |
+| PostgreSQL | 2001 | 5432 |
+| Gateway | 2002 | 8080 |
+| Simulator | 2003 | 8000 |
+| Ingestion | 2004 | 8000 |
+| Analytics | 2005 | 8000 |
+| Clustering | 2006 | 8000 |
+| Prediction | 2007 | 8000 |
 
 | Service | Swagger qua gateway | API kết quả |
 | --- | --- | --- |
-| Analytics | http://localhost:8080/api/analytics/docs | GET /api/analytics/summary |
-| Clustering | http://localhost:8080/api/clustering/docs | GET /api/clustering/clusters |
-| Prediction | http://localhost:8080/api/prediction/docs | GET /api/prediction/predictions |
-| Ingestion | http://localhost:8080/api/ingestion/docs | GET /api/ingestion/flights |
+| Analytics | http://localhost:2002/api/analytics/docs | GET /api/analytics/summary |
+| Clustering | http://localhost:2002/api/clustering/docs | GET /api/clustering/clusters |
+| Prediction | http://localhost:2002/api/prediction/docs | GET /api/prediction/predictions |
+| Ingestion | http://localhost:2002/api/ingestion/docs | GET /api/ingestion/flights |
 
-Gateway healthcheck: http://localhost:8080/health.
+Gateway healthcheck ở http://localhost:2002/health.
 
 ```powershell
 docker compose logs -f analytics
@@ -66,8 +76,7 @@ docker compose down
 
 ## Cách 2: Chạy local bằng Python trong Miniconda
 
-Dùng cách này khi viết code và test từng service: không cần chạy Docker Desktop
-hoặc build image. Các service Python vẫn chạy thành process độc lập.
+Dùng cách này khi viết code và test từng service. Python chạy bằng Conda, còn Analytics và Ingestion kết nối với PostgreSQL tại `127.0.0.1:2001`. Xem [lệnh khởi động riêng PostgreSQL](database/README.md).
 Có thể dùng chung một Conda environment cho 4 service vì dependencies hiện giống nhau.
 
 ### Tạo environment và cài dependencies một lần
@@ -99,7 +108,8 @@ Terminal Analytics:
 ```powershell
 conda activate flight-delay
 Set-Location analytics
-python -m uvicorn app.main:app --host 127.0.0.1 --port 8001 --reload
+$env:DATABASE_URL = "postgresql://analytics:analytics@127.0.0.1:2001/analytics_db"
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8001 --loop asyncio --reload
 ```
 
 Terminal Clustering:
@@ -123,7 +133,8 @@ Terminal Ingestion:
 ```powershell
 conda activate flight-delay
 Set-Location ingestion
-python -m uvicorn app.main:app --host 127.0.0.1 --port 8004 --reload
+$env:DATABASE_URL = "postgresql://analytics:analytics@127.0.0.1:2001/analytics_db"
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8004 --loop asyncio --reload
 ```
 
 `--reload` tự khởi động lại service khi lưu thay đổi file Python. Không cần build
@@ -179,35 +190,20 @@ Invoke-RestMethod -Method Post http://localhost:8001/run
 Invoke-RestMethod http://localhost:8001/jobs/latest
 ```
 
-Với Docker, thay base URL bằng http://localhost:8080/api/analytics.
+Với Docker, dùng base URL http://localhost:2002/api/analytics.
 POST /run chờ job hoàn thành. Job chạy chồng trả HTTP 409;
 lỗi pipeline trả HTTP 500 và giữ kết quả thành công trước đó.
 
-## Trạng thái hiện tại
+## Ingestion và Analytics
 
-Chưa có database, thuật toán phân tích, model AI hoặc tích hợp simulator.
-Điền nghiệp vụ trong app/pipeline.py của từng service và trả PipelineOutput.
-POST /run hiện trả **HTTP 501, not_implemented**; API kết quả trả
-`ready: false` và dữ liệu rỗng. Đây là phản hồi dự kiến của template.
-Healthcheck chỉ xác nhận ứng dụng đang chạy.
-
-Scheduler mặc định tắt. Sau khi hoàn thiện pipeline, bật trong .env của service
-khi chạy local, hoặc trong backend/.env khi dùng Docker.
-Mặc định ingestion, analytics, prediction dùng 300 giây; clustering dùng 86400 giây.
-Lần đầu chạy sau một khoảng chờ, các lần sau chờ đủ khoảng cách từ lúc job trước
-kết thúc. Một service chỉ chạy một instance, một worker với cơ chế khóa hiện tại.
-
-Job và kết quả hiện lưu trong RAM, mất khi restart. Khi thêm database, thay bằng
-repository/persistence. Training model tách khỏi lượt prediction định kỳ.
-SIMULATOR_BASE_URL trong ingestion là chỗ cấu hình cho bước tích hợp sau này,
-chưa thực hiện gọi mạng. Simulator không được khởi động bởi Compose này.
+Ingestion đọc Simulator và ghi chuyến bay vào PostgreSQL. Analytics đọc cùng DB, lưu snapshot và cung cấp [API biểu đồ và dự báo](analytics/README.md). Hai scheduler mặc định chạy mỗi 300 giây trong Compose. Có thể đổi chu kỳ hoặc tắt scheduler trong `backend/.env`.
 
 ## Kết nối frontend
 
 Khi dùng gateway, cấu hình frontend:
 
 ```dotenv
-NEXT_PUBLIC_API_BASE_URL=http://localhost:8080/api
+NEXT_PUBLIC_API_BASE_URL=http://localhost:2002/api
 ```
 
 FRONTEND_ORIGIN trong backend/.env mặc định là http://localhost:3000,

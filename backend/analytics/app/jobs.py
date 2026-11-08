@@ -57,9 +57,7 @@ class JobRunner:
             return job
 
     async def schedule(self, interval_seconds: float) -> None:
-        # First run happens after one interval; each next interval follows completion.
         while True:
-            await asyncio.sleep(interval_seconds)
             try:
                 await self.run_once(trigger="schedule")
             except JobAlreadyRunning:
@@ -68,4 +66,5 @@ class JobRunner:
                 logger.warning("Pipeline is not implemented: service=%s", self.service)
             except Exception:
                 # run_once logs the failure; keep the scheduler alive for the next run.
-                continue
+                pass
+            await asyncio.sleep(interval_seconds)

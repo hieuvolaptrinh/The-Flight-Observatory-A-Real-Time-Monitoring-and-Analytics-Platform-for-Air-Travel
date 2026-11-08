@@ -20,6 +20,7 @@ import httpx
 
 from app.config import Settings
 from app.db import FlightRepository
+from app.schedule import Flight, ReplayPosition
 from app.schemas import PipelineOutput
 
 logger = logging.getLogger(__name__)
@@ -180,29 +181,43 @@ class Pipeline:
         self.repository = repository or FlightRepository(self.settings.database_url)
         self._fallback_cursor = 0
 
-    async def _fetch_from_simulator(self) -> dict[str, Any]:
+    async def _fetch_from_simulator(self) -> tuple[dict[str, Any], ReplayPosition | None]:
         base_url = self.settings.simulator_base_url.strip().rstrip("/")
         if not base_url:
-            raise RuntimeError("SIMULATOR_BASE_URL is empty")
+            raise ValueError("SIMULATOR_BASE_URL is empty")
         url = f"{base_url}/flights"
         params = {
             "window_size": self.settings.simulator_window_size,
             "slide_step": self.settings.simulator_slide_step,
         }
+        start = None
+        if self.repository.has_schedule:
+            start = await asyncio.to_thread(self.repository.simulator_offset, base_url)
+            params = {"start": start, "window_size": self.settings.ingestion_batch_size}
         async with httpx.AsyncClient(timeout=20.0) as client:
             resp = await client.get(url, params=params)
             resp.raise_for_status()
             payload = resp.json()
-            payload["source"] = f"simulator ({url})"
-            return payload
+        payload["source"] = f"simulator ({url})"
+        if start is None:
+            return payload, None
+
+        total = payload["total"]
+        size = len(payload["data"])
+        if total <= 0 or payload["window_start"] != start % total or size != min(total, params["window_size"]):
+            raise ValueError("Simulator did not honor the requested cursor and batch size")
+        return payload, ReplayPosition(base_url, start, (start + size) % total)
 
     def _fetch_from_fallback_csv(self) -> dict[str, Any]:
         csv_path = Path(self.settings.fallback_csv_path)
         if not csv_path.exists():
             raise FileNotFoundError(f"Neither simulator nor fallback CSV found at {csv_path}")
 
-        window_size = self.settings.simulator_window_size
-        slide_step = self.settings.simulator_slide_step
+        if self.repository.has_schedule:
+            window_size = slide_step = self.settings.ingestion_batch_size
+        else:
+            window_size = self.settings.simulator_window_size
+            slide_step = self.settings.simulator_slide_step
         start = self._fallback_cursor
         end = start + window_size
         rows: list[dict[str, Any]] = []
@@ -220,7 +235,6 @@ class Pipeline:
             self._fallback_cursor = 0
             return self._fetch_from_fallback_csv()
 
-        self._fallback_cursor = start + slide_step
         return {
             "source": f"csv-fallback ({csv_path.name})",
             "fetched_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -247,20 +261,31 @@ class Pipeline:
                     logger.debug("Downstream trigger %s skipped: %s", url, exc)
 
     async def run(self) -> PipelineOutput:
+        replay = None
+        using_csv = False
         try:
-            payload = await self._fetch_from_simulator()
-        except Exception as exc:
+            payload, replay = await self._fetch_from_simulator()
+        except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
             logger.warning("Simulator unreachable (%s); falling back to local CSV sliding window.", exc)
             payload = await asyncio.to_thread(self._fetch_from_fallback_csv)
+            using_csv = True
 
         fetched_at = payload.get("fetched_at") or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        ingested_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        ingested_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         raw_items = payload.get("data") or []
 
         normalized: list[dict[str, Any]] = []
+        scheduled: list[Flight] = []
         seen_in_batch: set[str] = set()
         for raw in raw_items:
             rec = normalize_record(raw, fetched_at=fetched_at, ingested_at=ingested_at)
+            if rec and self.repository.has_schedule and (
+                replay is not None or (raw.get("ORIGIN_AIRPORT_SEQ_ID") and raw.get("DEST_AIRPORT_SEQ_ID"))
+            ):
+                schedule_record = {key: None if value == "" else value for key, value in raw.items()}
+                scheduled.append(Flight.model_validate(schedule_record | {
+                    "FL_DATE": rec["fl_date"], "OP_CARRIER_FL_NUM": rec["op_carrier_fl_num"],
+                }))
             if rec and rec["flight_key"] not in seen_in_batch:
                 seen_in_batch.add(rec["flight_key"])
                 normalized.append(rec)
@@ -274,7 +299,9 @@ class Pipeline:
             "created_at": ingested_at,
         }
 
-        counts = await asyncio.to_thread(self.repository.insert_batch, normalized, batch_meta)
+        counts = await asyncio.to_thread(self.repository.insert_batch, normalized, batch_meta, tuple(scheduled), replay)
+        if using_csv:
+            self._fallback_cursor = payload["window_start"] + payload["slide_step"]
         logger.info(
             "Ingestion batch completed: source=%s window=[%s..%s] received=%d inserted=%d duplicates=%d total_stored=%d",
             batch_meta["source"],

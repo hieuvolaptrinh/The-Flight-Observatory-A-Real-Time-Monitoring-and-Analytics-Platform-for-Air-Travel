@@ -11,7 +11,7 @@ class PipelineOutput(BaseModel):
 
 class Results(BaseModel):
     service: str
-    storage: Literal["memory"] = "memory"
+    storage: Literal["postgresql"] = "postgresql"
     ready: bool = False
     updated_at: datetime | None = None
     output: PipelineOutput = Field(default_factory=PipelineOutput)

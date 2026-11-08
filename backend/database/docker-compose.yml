@@ -1,0 +1,33 @@
+name: flight-delay-backend
+
+services:
+  postgres:
+    image: postgres:16-bookworm
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-2001}:5432"
+    environment:
+      POSTGRES_USER: "${ANALYTICS_POSTGRES_USER:-analytics}"
+      POSTGRES_PASSWORD: "${ANALYTICS_POSTGRES_PASSWORD:-analytics}"
+      POSTGRES_DB: "${ANALYTICS_POSTGRES_DB:-analytics_db}"
+    volumes:
+      - analytics_data:/var/lib/postgresql/data
+      - ../ingestion/db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ../db/init.sql:/docker-entrypoint-initdb.d/02-legacy.sql:ro
+      - ../ingestion/db/import_csv.sql:/opt/analytics-db/import_csv.sql:ro
+      - ../../data-simulator/data:/data-source:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -q -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 3s
+      start_period: 20s
+      retries: 10
+    networks:
+      - backend
+
+volumes:
+  analytics_data:
+
+networks:
+  backend:
+    driver: bridge

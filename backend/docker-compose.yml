@@ -1,5 +1,8 @@
 name: flight-delay-backend
 
+include:
+  - ./database/docker-compose.yml
+
 x-worker: &worker
   restart: unless-stopped
   init: true
@@ -8,32 +11,20 @@ x-worker: &worker
   networks:
     - backend
 
-services:
-  postgres:
-    image: postgres:16-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-flight}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-flight}
-      POSTGRES_DB: ${POSTGRES_DB:-flight_db}
-    ports:
-      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-flight} -d ${POSTGRES_DB:-flight_db}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - backend
+x-postgres-client: &postgres-client
+  DATABASE_URL: "postgresql://"
+  PGHOST: postgres
+  PGPORT: "5432"
+  PGDATABASE: "${ANALYTICS_POSTGRES_DB:-analytics_db}"
+  PGUSER: "${ANALYTICS_POSTGRES_USER:-analytics}"
+  PGPASSWORD: "${ANALYTICS_POSTGRES_PASSWORD:-analytics}"
 
+services:
   data-simulator:
     build: ../data-simulator
     restart: unless-stopped
     ports:
-      - "127.0.0.1:${SIMULATOR_PORT:-8000}:8000"
+      - "127.0.0.1:${SIMULATOR_PORT:-2003}:8000"
     environment:
       CSV_PATH: /app/data/T_ONTIME_REPORTING_1.csv
       WINDOW_SIZE: "${SIMULATOR_WINDOW_SIZE:-100}"
@@ -53,7 +44,7 @@ services:
     build: ./gateway
     restart: unless-stopped
     ports:
-      - "127.0.0.1:${GATEWAY_PORT:-8080}:8080"
+      - "127.0.0.1:${GATEWAY_PORT:-2002}:8080"
     environment:
       FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:3000}
     depends_on:
@@ -69,12 +60,13 @@ services:
       - backend
 
   frontend:
-    build: ../fe
+    build:
+      context: ../fe
+      args:
+        NEXT_PUBLIC_API_BASE_URL: "http://localhost:${GATEWAY_PORT:-2002}/api"
     restart: unless-stopped
     ports:
       - "127.0.0.1:${FRONTEND_PORT:-3000}:3000"
-    environment:
-      NEXT_PUBLIC_API_BASE_URL: "http://localhost:${GATEWAY_PORT:-8080}/api"
     depends_on:
       gateway:
         condition: service_healthy
@@ -84,19 +76,26 @@ services:
   analytics:
     <<: *worker
     build: ./analytics
+    ports:
+      - "127.0.0.1:${ANALYTICS_PORT:-2005}:8000"
     depends_on:
       postgres:
         condition: service_healthy
+    env_file:
+      - path: ./analytics/.env
+        required: false
     environment:
+      <<: *postgres-client
       SERVICE_NAME: analytics
       ROOT_PATH: /api/analytics
-      SCHEDULER_ENABLED: "${ANALYTICS_SCHEDULER_ENABLED:-false}"
+      SCHEDULER_ENABLED: "${ANALYTICS_SCHEDULER_ENABLED:-true}"
       JOB_INTERVAL_SECONDS: "${ANALYTICS_INTERVAL_SECONDS:-300}"
-      DATABASE_URL: "${DATABASE_URL:-postgresql://flight:flight@postgres:5432/flight_db}"
 
   clustering:
     <<: *worker
     build: ./clustering
+    ports:
+      - "127.0.0.1:${CLUSTERING_PORT:-2006}:8000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -106,32 +105,31 @@ services:
       - clustering_models:/service/models
       - ../data-simulator/data:/data-source:ro
     environment:
+      <<: *postgres-client
       SERVICE_NAME: clustering
       ROOT_PATH: /api/clustering
       SCHEDULER_ENABLED: "${CLUSTERING_SCHEDULER_ENABLED:-true}"
       RUN_ON_STARTUP: "${CLUSTERING_RUN_ON_STARTUP:-true}"
       JOB_INTERVAL_SECONDS: "${CLUSTERING_INTERVAL_SECONDS:-86400}"
-      DATABASE_URL: "${DATABASE_URL:-postgresql://flight:flight@postgres:5432/flight_db}"
-      SOURCE_DATABASE_URL: "${DATABASE_URL:-postgresql://flight:flight@postgres:5432/flight_db}"
       FALLBACK_CSV_PATH: /data-source/T_ONTIME_REPORTING_1.csv
       MODEL_PATH: /service/models/clustering_bundle.joblib
 
   prediction:
     <<: *worker
     build: ./prediction
-    depends_on:
-      postgres:
-        condition: service_healthy
+    ports:
+      - "127.0.0.1:${PREDICTION_PORT:-2007}:8000"
     environment:
       SERVICE_NAME: prediction
       ROOT_PATH: /api/prediction
       SCHEDULER_ENABLED: "${PREDICTION_SCHEDULER_ENABLED:-false}"
       JOB_INTERVAL_SECONDS: "${PREDICTION_INTERVAL_SECONDS:-300}"
-      DATABASE_URL: "${DATABASE_URL:-postgresql://flight:flight@postgres:5432/flight_db}"
 
   ingestion:
     <<: *worker
     build: ./ingestion
+    ports:
+      - "127.0.0.1:${INGESTION_PORT:-2004}:8000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -140,22 +138,16 @@ services:
     volumes:
       - ../data-simulator/data:/data-source:ro
     environment:
+      <<: *postgres-client
       SERVICE_NAME: ingestion
       ROOT_PATH: /api/ingestion
       SCHEDULER_ENABLED: "${INGESTION_SCHEDULER_ENABLED:-true}"
       RUN_ON_STARTUP: "${INGESTION_RUN_ON_STARTUP:-true}"
       JOB_INTERVAL_SECONDS: "${INGESTION_INTERVAL_SECONDS:-300}"
       SIMULATOR_BASE_URL: "${SIMULATOR_BASE_URL:-http://data-simulator:8000}"
-      SIMULATOR_WINDOW_SIZE: "${SIMULATOR_WINDOW_SIZE:-100}"
-      SIMULATOR_SLIDE_STEP: "${SIMULATOR_SLIDE_STEP:-20}"
-      DATABASE_URL: "${DATABASE_URL:-postgresql://flight:flight@postgres:5432/flight_db}"
+      INGESTION_BATCH_SIZE: "${INGESTION_BATCH_SIZE:-5}"
       FALLBACK_CSV_PATH: /data-source/T_ONTIME_REPORTING_1.csv
-      TRIGGER_DOWNSTREAM_URLS: "${TRIGGER_DOWNSTREAM_URLS:-http://clustering:8000/run}"
+      TRIGGER_DOWNSTREAM_URLS: "${TRIGGER_DOWNSTREAM_URLS-http://clustering:8000/run}"
 
 volumes:
-  postgres_data:
   clustering_models:
-
-networks:
-  backend:
-    driver: bridge
