@@ -147,13 +147,21 @@ def normalize_record(raw: dict[str, Any], fetched_at: str, ingested_at: str) -> 
             return None
 
     tail_num = str(raw.get("TAIL_NUM") or "").strip() or None
+    raw_carrier_name = str(raw.get("CARRIER_NAME") or "").strip()
+    carrier_name = raw_carrier_name or CARRIER_NAMES.get(carrier, f"Carrier {carrier}")
+    day_of_week = _opt_int(raw.get("DAY_OF_WEEK"))
+    if day_of_week is None:
+        try:
+            day_of_week = datetime.strptime(fl_date, "%Y-%m-%d").isoweekday()
+        except ValueError:
+            day_of_week = None
 
     return {
         "flight_key": flight_key,
         "fl_date": fl_date,
-        "day_of_week": _opt_int(raw.get("DAY_OF_WEEK")),
+        "day_of_week": day_of_week,
         "op_unique_carrier": carrier,
-        "carrier_name": CARRIER_NAMES.get(carrier, f"Carrier {carrier}"),
+        "carrier_name": carrier_name,
         "tail_num": tail_num,
         "op_carrier_fl_num": fl_num,
         "flight_code": f"{carrier} {fl_num}",
@@ -284,7 +292,11 @@ class Pipeline:
             ):
                 schedule_record = {key: None if value == "" else value for key, value in raw.items()}
                 scheduled.append(Flight.model_validate(schedule_record | {
-                    "FL_DATE": rec["fl_date"], "OP_CARRIER_FL_NUM": rec["op_carrier_fl_num"],
+                    "DAY_OF_WEEK": rec["day_of_week"],
+                    "FL_DATE": rec["fl_date"],
+                    "OP_CARRIER_FL_NUM": rec["op_carrier_fl_num"],
+                    "CARRIER_NAME": rec["carrier_name"],
+                    "DELAY_MINUTES": rec["delay_minutes"],
                 }))
             if rec and rec["flight_key"] not in seen_in_batch:
                 seen_in_batch.add(rec["flight_key"])
