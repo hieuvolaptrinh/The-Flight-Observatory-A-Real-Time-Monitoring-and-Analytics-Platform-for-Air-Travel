@@ -9,27 +9,6 @@ x-worker: &worker
     - backend
 
 services:
-<<<<<<< Updated upstream
-=======
-  postgres:
-    image: postgres:16-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-flight}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-flight}
-      POSTGRES_DB: ${POSTGRES_DB:-flight_db}
-    ports:
-      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-flight} -d ${POSTGRES_DB:-flight_db}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - backend
-
   data-simulator:
     build: ../data-simulator
     restart: unless-stopped
@@ -50,7 +29,6 @@ services:
     networks:
       - backend
 
->>>>>>> Stashed changes
   gateway:
     build: ./gateway
     restart: unless-stopped
@@ -73,11 +51,21 @@ services:
   analytics:
     <<: *worker
     build: ./analytics
+    depends_on:
+      ingestion:
+        condition: service_healthy
+    env_file:
+      - path: ./analytics/.env
+        required: false
     environment:
       SERVICE_NAME: analytics
       ROOT_PATH: /api/analytics
-      SCHEDULER_ENABLED: "${ANALYTICS_SCHEDULER_ENABLED:-false}"
+      SCHEDULER_ENABLED: "${ANALYTICS_SCHEDULER_ENABLED:-true}"
       JOB_INTERVAL_SECONDS: "${ANALYTICS_INTERVAL_SECONDS:-300}"
+      PGHOST: ingestion
+      PGDATABASE: "${ANALYTICS_POSTGRES_DB:-analytics_db}"
+      PGUSER: "${ANALYTICS_POSTGRES_USER:-analytics}"
+      PGPASSWORD: "${ANALYTICS_POSTGRES_PASSWORD:-analytics}"
 
   clustering:
     <<: *worker
@@ -100,39 +88,26 @@ services:
   ingestion:
     <<: *worker
     build: ./ingestion
-<<<<<<< Updated upstream
-=======
     stop_grace_period: 45s
     depends_on:
-      postgres:
-        condition: service_healthy
       data-simulator:
         condition: service_healthy
     volumes:
       - ../data-simulator/data:/data-source:ro
       - analytics_data:/var/lib/postgresql/data
->>>>>>> Stashed changes
     environment:
       SERVICE_NAME: ingestion
       ROOT_PATH: /api/ingestion
-      SCHEDULER_ENABLED: "${INGESTION_SCHEDULER_ENABLED:-false}"
+      SCHEDULER_ENABLED: "${INGESTION_SCHEDULER_ENABLED:-true}"
       JOB_INTERVAL_SECONDS: "${INGESTION_INTERVAL_SECONDS:-300}"
-<<<<<<< Updated upstream
-      SIMULATOR_BASE_URL: "${SIMULATOR_BASE_URL:-}"
-=======
       SIMULATOR_BASE_URL: "${SIMULATOR_BASE_URL:-http://data-simulator:8000}"
-      SIMULATOR_WINDOW_SIZE: "${SIMULATOR_WINDOW_SIZE:-100}"
-      SIMULATOR_SLIDE_STEP: "${SIMULATOR_SLIDE_STEP:-20}"
-      DATABASE_URL: "${DATABASE_URL:-postgresql://flight:flight@postgres:5432/flight_db}"
+      INGESTION_BATCH_SIZE: "${INGESTION_BATCH_SIZE:-5}"
       POSTGRES_USER: "${ANALYTICS_POSTGRES_USER:-analytics}"
       POSTGRES_PASSWORD: "${ANALYTICS_POSTGRES_PASSWORD:-analytics}"
       POSTGRES_DB: "${ANALYTICS_POSTGRES_DB:-analytics_db}"
-      FALLBACK_CSV_PATH: /data-source/T_ONTIME_REPORTING_1.csv
 
 volumes:
-  postgres_data:
   analytics_data:
->>>>>>> Stashed changes
 
 networks:
   backend:

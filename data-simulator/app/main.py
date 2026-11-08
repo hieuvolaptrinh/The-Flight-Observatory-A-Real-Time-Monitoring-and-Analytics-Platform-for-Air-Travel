@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -111,6 +111,7 @@ def get_flights(
         default=None, ge=0, le=500,
         description="Bước trượt mỗi lần gọi (mặc định = SLIDE_STEP env, default 20)"
     ),
+    start: int | None = Query(default=None, ge=0, description="Vị trí đọc do client quản lý. Không dịch cửa sổ chung."),
 ):
     """
     Trả về cửa sổ trượt gồm `window_size` records.
@@ -124,7 +125,12 @@ def get_flights(
     step  = slide_step  if slide_step is not None else config.SLIDE_STEP
     total = len(_state.records)
 
-    start = _state.window_start % total
+    if total == 0:
+        raise HTTPException(status_code=503, detail="No flights loaded")
+    explicit_start = start is not None
+    if explicit_start:
+        size = min(size, total)
+    start = (start if explicit_start else _state.window_start) % total
     end   = start + size
 
     # Lấy dữ liệu (wrap nếu cần)
@@ -134,7 +140,8 @@ def get_flights(
         batch = _state.records[start:] + _state.records[: end - total]
 
     # Trượt cửa sổ cho lần gọi tiếp theo
-    _state.window_start = (start + step) % total
+    if not explicit_start:
+        _state.window_start = (start + step) % total
 
     return FlightsResponse(
         fetched_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),

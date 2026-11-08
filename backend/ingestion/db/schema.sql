@@ -3,6 +3,12 @@ BEGIN;
 CREATE SCHEMA IF NOT EXISTS flight_data;
 CREATE SCHEMA IF NOT EXISTS analytics;
 
+CREATE TABLE IF NOT EXISTS flight_data.simulator_offsets (
+    source_url text PRIMARY KEY,
+    next_start integer NOT NULL CHECK (next_start >= 0),
+    updated_at timestamptz NOT NULL DEFAULT statement_timestamp()
+);
+
 CREATE TABLE IF NOT EXISTS flight_data.airlines (
     carrier_code text PRIMARY KEY CHECK (carrier_code <> ''),
     carrier_name text
@@ -80,7 +86,25 @@ CREATE TABLE IF NOT EXISTS analytics.schedule_snapshots (
     flight_count bigint NOT NULL CHECK (flight_count >= 0),
     payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
     PRIMARY KEY (date_from, date_to),
-    CHECK (date_to > date_from AND date_to - date_from <= 366)
+    CONSTRAINT schedule_snapshots_window CHECK (date_to - date_from BETWEEN 1 AND 1096)
+);
+
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'analytics.schedule_snapshots'::regclass
+                    AND conname = 'schedule_snapshots_window') THEN
+        ALTER TABLE analytics.schedule_snapshots DROP CONSTRAINT IF EXISTS schedule_snapshots_check;
+        ALTER TABLE analytics.schedule_snapshots ADD CONSTRAINT schedule_snapshots_window
+            CHECK (date_to - date_from BETWEEN 1 AND 1096);
+    END IF;
+END;
+$$;
+
+CREATE TABLE IF NOT EXISTS analytics.forecasts (
+    forecast_date date PRIMARY KEY,
+    computed_at timestamptz NOT NULL DEFAULT statement_timestamp(),
+    model text NOT NULL,
+    payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object')
 );
 
 CREATE OR REPLACE FUNCTION analytics.refresh_schedule(p_from date, p_to date)
@@ -93,8 +117,8 @@ BEGIN
     IF p_from IS NULL OR p_to IS NULL OR NOT isfinite(p_from) OR NOT isfinite(p_to) THEN
         RAISE EXCEPTION 'Use finite start and end dates';
     END IF;
-    IF p_to - p_from NOT BETWEEN 1 AND 366 THEN
-        RAISE EXCEPTION 'Use a date range of 1 to 366 days with an exclusive end';
+    IF p_to - p_from NOT BETWEEN 1 AND 1096 THEN
+        RAISE EXCEPTION 'Use a date range of 1 to 1096 days with an exclusive end';
     END IF;
 
     -- Serialize refreshes for the same window before reading the source data.

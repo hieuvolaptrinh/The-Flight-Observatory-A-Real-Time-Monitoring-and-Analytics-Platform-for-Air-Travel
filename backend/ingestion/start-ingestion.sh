@@ -36,6 +36,7 @@ postgres_stop_signal=INT
 psql -X -v ON_ERROR_STOP=1 -h /var/run/postgresql \
     -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f /opt/analytics-db/schema.sql
 
+export PGHOST=/var/run/postgresql PGUSER="$POSTGRES_USER" PGDATABASE="$POSTGRES_DB"
 gosu appuser "$@" &
 api_pid=$!
 

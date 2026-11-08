@@ -9,10 +9,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /service
 COPY requirements.txt .
-<<<<<<< Updated upstream
-RUN pip install --no-cache-dir -r requirements.txt \
-    && useradd --create-home --uid 10001 appuser
-=======
 RUN apt-get update \
     && apt-get install -y --no-install-recommends python3-venv \
     && rm -rf /var/lib/apt/lists/* \
@@ -21,7 +17,6 @@ RUN apt-get update \
     && useradd --create-home --uid 10001 appuser \
     && mkdir -p /service/data \
     && chown -R appuser:appuser /service
->>>>>>> Stashed changes
 
 COPY --chown=appuser:appuser app ./app
 COPY db/*.sql /opt/analytics-db/

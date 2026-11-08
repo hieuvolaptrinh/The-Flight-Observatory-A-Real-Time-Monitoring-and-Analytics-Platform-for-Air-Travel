@@ -2,7 +2,7 @@ import asyncio
 from contextlib import asynccontextmanager, suppress
 import logging
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 
 from app.config import Settings
 from app.jobs import JobAlreadyRunning, JobRunner
@@ -17,7 +17,7 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        runner = JobRunner(settings.service_name, pipeline if pipeline is not None else Pipeline())
+        runner = JobRunner(settings.service_name, pipeline if pipeline is not None else Pipeline(settings))
         app.state.runner = runner
         task = (
             asyncio.create_task(runner.schedule(settings.job_interval_seconds))
@@ -33,7 +33,7 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
 
     app = FastAPI(
         title=settings.service_name,
-        description="Flight delay service scaffold. No database or production pipeline is configured.",
+        description="Replays scheduled flights from the simulator and persists them in PostgreSQL.",
         version="0.1.0",
         root_path=settings.root_path,
         lifespan=lifespan,
@@ -45,13 +45,17 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
             "status": "ok", "service": settings.service_name,
             "scheduler_enabled": settings.scheduler_enabled,
             "job_interval_seconds": settings.job_interval_seconds,
-            "storage": "memory",
+            "storage": "postgresql",
         }
 
     @app.get("/results", response_model=Results, tags=["results"])
-    @app.get("/flights", response_model=Results, tags=["results"])
     async def results():
         return app.state.runner.results
+
+    @app.get("/flights", response_model=Results, tags=["results"])
+    async def flights(limit: int = Query(5, ge=1, le=100), offset: int = Query(0, ge=0)):
+        output = await app.state.runner.pipeline.flights(limit, offset)
+        return Results(service=settings.service_name, ready=bool(output.items), output=output)
 
     @app.get("/jobs/latest", response_model=Job | None, tags=["operations"])
     async def latest_job():

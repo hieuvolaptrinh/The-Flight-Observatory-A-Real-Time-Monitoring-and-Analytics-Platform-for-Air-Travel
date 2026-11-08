@@ -33,7 +33,7 @@ docker compose -f backend/docker-compose.yml exec -T ingestion psql -X -v csv_pa
 docker compose -f backend/docker-compose.yml exec ingestion psql -X -U analytics -d analytics_db
 ```
 
-Lệnh import có thể lặp lại cho từng tháng. `csv_path` trỏ đến tệp trong thư mục `/data-source` được mount vào container `ingestion`. Script dùng staging tạm, kiểm tra tên và thứ tự 17 cột, kiểm tra thứ trong tuần và ánh xạ sân bay, rồi trả về số dòng CSV, số đã thêm và số trùng. Pipeline Ingestion hiện vẫn ghi bảng `ingested_flights` qua `DATABASE_URL`. Đường nạp vào schema `flight_data` hiện là script CSV này.
+Pipeline Ingestion nạp dữ liệu Simulator vào `flight_data.flights` ngay khi khởi động, rồi lặp lại mỗi 300 giây với mặc định 5 chuyến một lô. Con trỏ nằm trong `flight_data.simulator_offsets` và được commit cùng các chuyến. Import CSV là cách nạp nhanh lịch sử cho demo. `csv_path` trỏ đến tệp trong thư mục `/data-source` được mount vào container `ingestion`.
 
 ```sql
 SELECT flight_date, day_of_week, carrier_code, flight_number, origin, dest,
@@ -48,7 +48,7 @@ ORDER BY flight_number;
 
 ## Kết quả Analytics
 
-Khoảng ngày gồm ngày bắt đầu và loại trừ ngày kết thúc. Hàm nhận từ 1 đến 366 ngày. Tuần bắt đầu thứ Hai. Bucket ở đầu hoặc cuối có thể chỉ bao gồm một phần tuần hoặc tháng.
+Khoảng ngày gồm ngày bắt đầu và loại trừ ngày kết thúc. Hàm nhận từ 1 đến 1.096 ngày. Tuần bắt đầu thứ Hai. Bucket ở đầu hoặc cuối có thể chỉ bao gồm một phần tuần hoặc tháng.
 
 ```sql
 SELECT analytics.refresh_schedule(DATE '2025-01-01', DATE '2025-02-01');
@@ -70,6 +70,6 @@ Bucket không có dòng đã nạp có `flight_count = 0`. Chỉ diễn giải �
 
 Khi có dữ liệu quan sát, lấy `ARR_DELAY`, `DEP_DELAY`, `CANCELLED`, `DIVERTED` từ BTS. `arrival_delay_pct` dùng tỷ lệ số chuyến đến trễ ít nhất 15 phút trên số chuyến có phút trễ lúc đến và không hủy/chuyển hướng. CSV lịch bay hiện tại cho `observed_arrivals = 0` và `arrival_delay_pct = NULL`. Dữ liệu trễ do ingestion mô phỏng thuộc bộ demo riêng.
 
-Khi nối FastAPI, `POST /api/analytics/run` hoặc job 5 phút gọi `refresh_schedule()` cho khoảng cấu hình rồi commit. `GET /api/analytics/results` đọc snapshot theo cùng khoảng ngày. Nếu chưa có dòng, trả `ready: false`. Nếu có dòng, dùng `computed_at` làm `updated_at`. Xóa snapshot rồi gọi refresh sẽ dựng lại kết quả từ các chuyến đã nạp. SQL này cung cấp tầng lưu trữ và tính toán. Pipeline FastAPI trong repo hiện vẫn là scaffold.
+`POST /api/analytics/run` hoặc job 5 phút gọi `refresh_schedule()` rồi commit. Xem [API Analytics cho UI](../../analytics/README.md) để dùng các biểu đồ và dự báo.
 
 Tham khảo [từ điển dữ liệu BTS](https://www.transtats.bts.gov/Fields.asp?gnoyr_VQ=FGJ) và [kiểu ngày giờ của PostgreSQL 16](https://www.postgresql.org/docs/16/datatype-datetime.html).
