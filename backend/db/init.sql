@@ -59,8 +59,10 @@ CREATE TABLE IF NOT EXISTS clustering_runs (
     created_at TEXT NOT NULL
 );
 
+CREATE INDEX IF NOT EXISTS idx_clustering_runs_created ON clustering_runs(created_at DESC);
+
 CREATE TABLE IF NOT EXISTS cluster_centroids (
-    run_id TEXT NOT NULL,
+    run_id TEXT NOT NULL REFERENCES clustering_runs(run_id) ON DELETE CASCADE,
     cluster_id INTEGER NOT NULL,
     cluster_name TEXT NOT NULL,
     short_label TEXT NOT NULL,
@@ -82,7 +84,7 @@ CREATE TABLE IF NOT EXISTS cluster_centroids (
 );
 
 CREATE TABLE IF NOT EXISTS cluster_assignments (
-    run_id TEXT NOT NULL,
+    run_id TEXT NOT NULL REFERENCES clustering_runs(run_id) ON DELETE CASCADE,
     entity_type TEXT NOT NULL,
     entity_code TEXT NOT NULL,
     entity_name TEXT NOT NULL,

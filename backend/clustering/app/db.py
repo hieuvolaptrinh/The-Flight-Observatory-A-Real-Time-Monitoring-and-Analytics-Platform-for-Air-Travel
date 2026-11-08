@@ -1,14 +1,14 @@
 """
 Database layer for Flight Clustering Service (STT 7: DB · Clustering).
 Stores cluster runs, cluster centroids + interpretations, and airport/route cluster assignments.
-Supports both PostgreSQL and SQLite.
+Preserves historical runs by run_id (with retention of latest 10 runs) and uses executemany for batch inserts.
 """
 from __future__ import annotations
 
-import json
-import sqlite3
 from datetime import datetime, timezone
+import json
 from pathlib import Path
+import sqlite3
 from typing import Any
 
 CLUSTERING_SCHEMA_SQL = """
@@ -25,8 +25,10 @@ CREATE TABLE IF NOT EXISTS clustering_runs (
     created_at TEXT NOT NULL
 );
 
+CREATE INDEX IF NOT EXISTS idx_clustering_runs_created ON clustering_runs(created_at DESC);
+
 CREATE TABLE IF NOT EXISTS cluster_centroids (
-    run_id TEXT NOT NULL,
+    run_id TEXT NOT NULL REFERENCES clustering_runs(run_id) ON DELETE CASCADE,
     cluster_id INTEGER NOT NULL,
     cluster_name TEXT NOT NULL,
     short_label TEXT NOT NULL,
@@ -48,7 +50,7 @@ CREATE TABLE IF NOT EXISTS cluster_centroids (
 );
 
 CREATE TABLE IF NOT EXISTS cluster_assignments (
-    run_id TEXT NOT NULL,
+    run_id TEXT NOT NULL REFERENCES clustering_runs(run_id) ON DELETE CASCADE,
     entity_type TEXT NOT NULL,
     entity_code TEXT NOT NULL,
     entity_name TEXT NOT NULL,
@@ -88,6 +90,7 @@ class ClusteringRepository:
     def _connect_sqlite(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.sqlite_path))
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
         return conn
 
     def _connect_postgres(self):
@@ -111,8 +114,12 @@ class ClusteringRepository:
         run_meta: dict[str, Any],
         centroids: list[dict[str, Any]],
         assignments: list[dict[str, Any]],
+        keep_latest_runs: int = 10,
     ) -> None:
-        """Persist a complete clustering run (replacing active run records cleanly)."""
+        """
+        Persist a new clustering run using executemany while preserving historical runs
+        (pruning runs older than `keep_latest_runs`).
+        """
         run_cols = [
             "run_id", "model_version", "algorithm", "n_clusters",
             "silhouette_score", "inertia", "total_airports", "total_routes",
@@ -131,47 +138,71 @@ class ClusteringRepository:
             "pca_x", "pca_y", "distance_to_centroid", "membership_probabilities_json",
         ]
 
+        centroid_params = [tuple(c_row[c] for c in centroid_cols) for c_row in centroids]
+        assign_params = [tuple(a_row[c] for c in assign_cols) for a_row in assignments]
+
         if self.is_postgres:
             with self._connect_postgres() as conn:
                 with conn.cursor() as cur:
-                    cur.execute("DELETE FROM cluster_assignments")
-                    cur.execute("DELETE FROM cluster_centroids")
-                    cur.execute("DELETE FROM clustering_runs")
                     cur.execute(
                         f"INSERT INTO clustering_runs ({', '.join(run_cols)}) VALUES ({', '.join(['%s']*len(run_cols))})",
                         [run_meta[c] for c in run_cols],
                     )
-                    for c_row in centroids:
-                        cur.execute(
+                    if centroid_params:
+                        cur.executemany(
                             f"INSERT INTO cluster_centroids ({', '.join(centroid_cols)}) VALUES ({', '.join(['%s']*len(centroid_cols))})",
-                            [c_row[c] for c in centroid_cols],
+                            centroid_params,
                         )
-                    for a_row in assignments:
-                        cur.execute(
+                    if assign_params:
+                        cur.executemany(
                             f"INSERT INTO cluster_assignments ({', '.join(assign_cols)}) VALUES ({', '.join(['%s']*len(assign_cols))})",
-                            [a_row[c] for c in assign_cols],
+                            assign_params,
                         )
+                    # Prune old runs beyond keep_latest_runs
+                    cur.execute(
+                        """
+                        SELECT run_id FROM clustering_runs
+                        ORDER BY created_at DESC
+                        OFFSET %s
+                        """,
+                        (keep_latest_runs,),
+                    )
+                    old_ids = [r["run_id"] for r in cur.fetchall()]
+                    if old_ids:
+                        cur.execute("DELETE FROM cluster_assignments WHERE run_id = ANY(%s)", (old_ids,))
+                        cur.execute("DELETE FROM cluster_centroids WHERE run_id = ANY(%s)", (old_ids,))
+                        cur.execute("DELETE FROM clustering_runs WHERE run_id = ANY(%s)", (old_ids,))
                 conn.commit()
         else:
             with self._connect_sqlite() as conn:
                 cur = conn.cursor()
-                cur.execute("DELETE FROM cluster_assignments")
-                cur.execute("DELETE FROM cluster_centroids")
-                cur.execute("DELETE FROM clustering_runs")
                 cur.execute(
                     f"INSERT INTO clustering_runs ({', '.join(run_cols)}) VALUES ({', '.join(['?']*len(run_cols))})",
                     [run_meta[c] for c in run_cols],
                 )
-                for c_row in centroids:
-                    cur.execute(
+                if centroid_params:
+                    cur.executemany(
                         f"INSERT INTO cluster_centroids ({', '.join(centroid_cols)}) VALUES ({', '.join(['?']*len(centroid_cols))})",
-                        [c_row[c] for c in centroid_cols],
+                        centroid_params,
                     )
-                for a_row in assignments:
-                    cur.execute(
+                if assign_params:
+                    cur.executemany(
                         f"INSERT INTO cluster_assignments ({', '.join(assign_cols)}) VALUES ({', '.join(['?']*len(assign_cols))})",
-                        [a_row[c] for c in assign_cols],
+                        assign_params,
                     )
+                cur.execute(
+                    """
+                    SELECT run_id FROM clustering_runs
+                    ORDER BY created_at DESC
+                    LIMIT -1 OFFSET ?
+                    """,
+                    (keep_latest_runs,),
+                )
+                old_ids = [r["run_id"] for r in cur.fetchall()]
+                for oid in old_ids:
+                    cur.execute("DELETE FROM cluster_assignments WHERE run_id = ?", (oid,))
+                    cur.execute("DELETE FROM cluster_centroids WHERE run_id = ?", (oid,))
+                    cur.execute("DELETE FROM clustering_runs WHERE run_id = ?", (oid,))
                 conn.commit()
 
     def get_latest_clustering(

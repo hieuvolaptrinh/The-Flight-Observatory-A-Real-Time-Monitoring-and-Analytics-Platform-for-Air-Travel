@@ -1,13 +1,14 @@
 """
 Database layer for Flight Ingestion Service.
 Supports both PostgreSQL (via psycopg) and SQLite (via sqlite3).
+Uses batch execution (executemany) instead of row-by-row network round-trips.
 """
 from __future__ import annotations
 
-import logging
-import sqlite3
 from datetime import datetime, timezone
+import logging
 from pathlib import Path
+import sqlite3
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -43,6 +44,7 @@ CREATE INDEX IF NOT EXISTS idx_flights_origin ON ingested_flights(origin);
 CREATE INDEX IF NOT EXISTS idx_flights_dest ON ingested_flights(dest);
 CREATE INDEX IF NOT EXISTS idx_flights_carrier ON ingested_flights(op_unique_carrier);
 CREATE INDEX IF NOT EXISTS idx_flights_status ON ingested_flights(delay_status);
+CREATE INDEX IF NOT EXISTS idx_flights_date ON ingested_flights(fl_date);
 CREATE INDEX IF NOT EXISTS idx_flights_ingested_at ON ingested_flights(ingested_at DESC);
 
 CREATE TABLE IF NOT EXISTS ingestion_batches (
@@ -98,11 +100,10 @@ class FlightRepository:
         batch_meta: dict[str, Any],
     ) -> dict[str, int]:
         """
-        Insert normalized flight records with deduplication on flight_key.
-        Returns counts of received, inserted, duplicate, and total stored flights.
+        Insert normalized flight records in a single batch using executemany
+        with deduplication on flight_key.
         """
         received = len(records)
-        inserted = 0
 
         cols = [
             "flight_key", "fl_date", "day_of_week", "op_unique_carrier", "carrier_name",
@@ -111,6 +112,7 @@ class FlightRepository:
             "crs_elapsed_time", "distance", "delay_minutes", "delay_status", "is_delayed",
             "fetched_at", "ingested_at",
         ]
+        param_rows = [tuple(r.get(c) for c in cols) for r in records]
 
         if self.is_postgres:
             placeholders = ", ".join(["%s"] * len(cols))
@@ -121,11 +123,13 @@ class FlightRepository:
             """
             with self._connect_postgres() as conn:
                 with conn.cursor() as cur:
-                    for r in records:
-                        cur.execute(sql, [r.get(c) for c in cols])
-                        inserted += cur.rowcount if cur.rowcount > 0 else 0
+                    cur.execute("SELECT COUNT(*) AS cnt FROM ingested_flights")
+                    before_cnt = int(cur.fetchone()["cnt"])
+                    if param_rows:
+                        cur.executemany(sql, param_rows)
                     cur.execute("SELECT COUNT(*) AS cnt FROM ingested_flights")
                     total_stored = int(cur.fetchone()["cnt"])
+                    inserted = max(0, total_stored - before_cnt)
                     cur.execute(
                         """
                         INSERT INTO ingestion_batches (
@@ -141,7 +145,7 @@ class FlightRepository:
                             batch_meta.get("window_end"),
                             received,
                             inserted,
-                            received - inserted,
+                            max(0, received - inserted),
                             total_stored,
                             batch_meta["created_at"],
                         ),
@@ -155,11 +159,13 @@ class FlightRepository:
             """
             with self._connect_sqlite() as conn:
                 cur = conn.cursor()
-                for r in records:
-                    cur.execute(sql, [r.get(c) for c in cols])
-                    inserted += cur.rowcount if cur.rowcount > 0 else 0
+                cur.execute("SELECT COUNT(*) AS cnt FROM ingested_flights")
+                before_cnt = int(cur.fetchone()["cnt"])
+                if param_rows:
+                    cur.executemany(sql, param_rows)
                 cur.execute("SELECT COUNT(*) AS cnt FROM ingested_flights")
                 total_stored = int(cur.fetchone()["cnt"])
+                inserted = max(0, total_stored - before_cnt)
                 cur.execute(
                     """
                     INSERT INTO ingestion_batches (
@@ -175,14 +181,14 @@ class FlightRepository:
                         batch_meta.get("window_end"),
                         received,
                         inserted,
-                        received - inserted,
+                        max(0, received - inserted),
                         total_stored,
                         batch_meta["created_at"],
                     ),
                 )
                 conn.commit()
 
-        duplicates = received - inserted
+        duplicates = max(0, received - inserted)
         return {
             "received_count": received,
             "inserted_count": inserted,

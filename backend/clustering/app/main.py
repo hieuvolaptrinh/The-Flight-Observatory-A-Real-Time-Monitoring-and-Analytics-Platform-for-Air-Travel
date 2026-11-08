@@ -24,7 +24,9 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
         runner = JobRunner(settings.service_name, active_pipeline)
         app.state.runner = runner
         task = (
-            asyncio.create_task(runner.schedule(settings.job_interval_seconds))
+            asyncio.create_task(
+                runner.schedule(settings.job_interval_seconds, run_on_startup=settings.run_on_startup)
+            )
             if settings.scheduler_enabled else None
         )
         try:
@@ -38,7 +40,7 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
     app = FastAPI(
         title="Flight Clustering Service",
         description="Clusters US airports and flight routes with KMeans + PCA, persists centroids & cluster labels to DB.",
-        version="1.0.0",
+        version="1.1.0",
         root_path=settings.root_path,
         lifespan=lifespan,
     )
@@ -77,13 +79,13 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
         ),
     ):
         runner: JobRunner = app.state.runner
-        return runner.get_results(entity_type=entity_type, cluster_id=cluster_id)
+        return await asyncio.to_thread(runner.get_results, entity_type=entity_type, cluster_id=cluster_id)
 
     @app.delete("/clusters", tags=["operations"])
     async def clear_clusters():
         """Delete clustering results from DB (Demo step: clear DB -> Web shows missing -> POST /run recovers without training)."""
         runner: JobRunner = app.state.runner
-        deleted = runner.pipeline.repository.clear_all()
+        deleted = await asyncio.to_thread(runner.pipeline.repository.clear_all)
         return {"status": "cleared", "deleted_records": deleted}
 
     @app.post("/train", tags=["operations"])

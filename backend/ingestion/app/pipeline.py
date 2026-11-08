@@ -1,16 +1,17 @@
 """
 Ingestion Pipeline:
-1. Pull sliding-window flight batch from data-simulator API (with local CSV fallback).
-2. Validate, normalize, and enrich flight records.
-3. Deduplicate on natural flight_key and persist to database (PostgreSQL / SQLite).
-4. Log ingestion metrics and return PipelineOutput.
+1. Pull sliding-window flight batch from data-simulator API (with local CSV fallback only when running standalone).
+2. Validate, normalize, and enrich flight records using canonical flight_key and delay values from simulator.
+3. Deduplicate on natural flight_key and persist to database via asyncio.to_thread + executemany.
+4. Optionally trigger downstream services (analytics, prediction) asynchronously when new flights arrive.
 """
 from __future__ import annotations
 
+import asyncio
 import csv
+from datetime import datetime, timezone
 import hashlib
 import logging
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -79,10 +80,10 @@ def _estimate_delay(
     raw_row: dict[str, Any],
 ) -> tuple[float, str, int]:
     """
-    Use actual DEP_DELAY / ARR_DELAY if present in payload; otherwise compute a
-    realistic deterministic delay profile from route congestion, peak hour, and flight key.
+    Use DELAY_MINUTES / ARR_DELAY / DEP_DELAY provided by data-simulator;
+    otherwise compute canonical deterministic delay from normalized flight_key.
     """
-    for col in ("ARR_DELAY", "DEP_DELAY", "delay_minutes"):
+    for col in ("DELAY_MINUTES", "ARR_DELAY", "DEP_DELAY", "delay_minutes"):
         val = raw_row.get(col)
         if val is not None and str(val).strip() != "":
             try:
@@ -95,21 +96,19 @@ def _estimate_delay(
     digest = int(hashlib.md5(flight_key.encode("utf-8")).hexdigest()[:8], 16)
     bucket = digest % 100
 
-    # Peak hours (15:00 - 21:00) and busy hub airports experience higher delay probability
     hub_boost = (8 if origin in BUSY_HUBS else 0) + (5 if dest in BUSY_HUBS else 0)
     hour_boost = 12 if (dep_hour is not None and 15 <= dep_hour <= 21) else (5 if (dep_hour is not None and 11 <= dep_hour <= 14) else 0)
     dist_boost = 4 if distance >= 1800 else 0
     threshold = 74 - hub_boost - hour_boost - dist_boost
 
     if bucket < threshold:
-        delay = float(digest % 12)  # 0..11 mins (On time)
+        delay = float(digest % 12)
         return delay, "on_time", 0
-    elif bucket < threshold + 18:
-        delay = float(15 + (digest % 28))  # 15..42 mins (Moderate delay)
+    if bucket < threshold + 18:
+        delay = float(15 + (digest % 28))
         return delay, "moderate_delay", 1
-    else:
-        delay = float(45 + (digest % 75))  # 45..119 mins (Severe delay)
-        return delay, "severe_delay", 1
+    delay = float(45 + (digest % 75))
+    return delay, "severe_delay", 1
 
 
 def normalize_record(raw: dict[str, Any], fetched_at: str, ingested_at: str) -> dict[str, Any] | None:
@@ -126,7 +125,7 @@ def normalize_record(raw: dict[str, Any], fetched_at: str, ingested_at: str) -> 
     crs_arr_fmt, _ = _format_hhmm(raw.get("CRS_ARR_TIME"))
     crs_dep_raw = (crs_dep_fmt or "00:00").replace(":", "")
 
-    flight_key = f"{fl_date}_{carrier}_{fl_num}_{origin}_{dest}_{crs_dep_raw}"
+    flight_key = str(raw.get("FLIGHT_KEY") or f"{fl_date}_{carrier}_{fl_num}_{origin}_{dest}_{crs_dep_raw}")
     distance = float(raw.get("DISTANCE") or 0.0)
     elapsed = float(raw.get("CRS_ELAPSED_TIME") or 0.0)
     delay_minutes, delay_status, is_delayed = _estimate_delay(
@@ -232,12 +231,27 @@ class Pipeline:
             "data": rows,
         }
 
+    async def _notify_downstream(self) -> None:
+        raw_urls = self.settings.trigger_downstream_urls.strip()
+        if not raw_urls:
+            return
+        urls = [u.strip() for u in raw_urls.split(",") if u.strip()]
+        if not urls:
+            return
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            for url in urls:
+                try:
+                    resp = await client.post(url)
+                    logger.info("Triggered downstream service %s -> HTTP %s", url, resp.status_code)
+                except Exception as exc:
+                    logger.debug("Downstream trigger %s skipped: %s", url, exc)
+
     async def run(self) -> PipelineOutput:
         try:
             payload = await self._fetch_from_simulator()
         except Exception as exc:
             logger.warning("Simulator unreachable (%s); falling back to local CSV sliding window.", exc)
-            payload = self._fetch_from_fallback_csv()
+            payload = await asyncio.to_thread(self._fetch_from_fallback_csv)
 
         fetched_at = payload.get("fetched_at") or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         ingested_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -260,7 +274,7 @@ class Pipeline:
             "created_at": ingested_at,
         }
 
-        counts = self.repository.insert_batch(normalized, batch_meta)
+        counts = await asyncio.to_thread(self.repository.insert_batch, normalized, batch_meta)
         logger.info(
             "Ingestion batch completed: source=%s window=[%s..%s] received=%d inserted=%d duplicates=%d total_stored=%d",
             batch_meta["source"],
@@ -272,7 +286,10 @@ class Pipeline:
             counts["total_stored"],
         )
 
-        queried = self.repository.query_flights(limit=200, offset=0)
+        if counts["inserted_count"] > 0:
+            asyncio.create_task(self._notify_downstream())
+
+        queried = await asyncio.to_thread(self.repository.query_flights, limit=200, offset=0)
         return PipelineOutput(
             items=queried["items"],
             metadata=queried["metadata"],

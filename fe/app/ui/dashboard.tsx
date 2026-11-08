@@ -55,19 +55,6 @@ function TrendChart({ rate, day }: { rate: number; day: string }) {
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:8080/api";
 const DIRECT_INGESTION_URLS = ["http://127.0.0.1:8004", "http://localhost:8004"];
-const DIRECT_SIMULATOR_URLS = ["http://127.0.0.1:8000", "http://localhost:8000"];
-
-const CARRIER_MAP: Record<string, string> = {
-  AA: "American Airlines",
-  DL: "Delta Air Lines",
-  UA: "United Airlines",
-  WN: "Southwest Airlines",
-  AS: "Alaska Airlines",
-  B6: "JetBlue Airways",
-  NK: "Spirit Airlines",
-  F9: "Frontier Airlines",
-  OO: "SkyWest Airlines",
-};
 
 interface ServerFlightMeta {
   total_stored: number;
@@ -96,57 +83,6 @@ interface ServerFlightMeta {
   } | null;
 }
 
-function normalizeSimulatorRecord(raw: Record<string, unknown>, fetchedAt: string, idx: number): FlightItem {
-  const flDate = String(raw.FL_DATE || "2025-01-06");
-  const carrier = String(raw.OP_UNIQUE_CARRIER || "AA").toUpperCase();
-  const flNum = String(raw.OP_CARRIER_FL_NUM || idx);
-  const origin = String(raw.ORIGIN || "JFK").toUpperCase();
-  const dest = String(raw.DEST || "LAX").toUpperCase();
-  const depRaw = String(raw.CRS_DEP_TIME || "0800").padStart(4, "0");
-  const arrRaw = String(raw.CRS_ARR_TIME || "1000").padStart(4, "0");
-  const crsDep = `${depRaw.slice(0, 2)}:${depRaw.slice(2, 4)}`;
-  const crsArr = `${arrRaw.slice(0, 2)}:${arrRaw.slice(2, 4)}`;
-  const flightKey = `${flDate}_${carrier}_${flNum}_${origin}_${dest}_${depRaw}`;
-
-  let hash = 0;
-  for (let i = 0; i < flightKey.length; i++) {
-    hash = (hash * 31 + flightKey.charCodeAt(i)) >>> 0;
-  }
-  const bucket = hash % 100;
-  const depHour = parseInt(depRaw.slice(0, 2), 10) || 12;
-  const threshold = 15 <= depHour && depHour <= 21 ? 58 : 72;
-  let delayMinutes = hash % 12;
-  let delayStatus: FlightItem["delay_status"] = "on_time";
-  if (bucket >= threshold && bucket < threshold + 20) {
-    delayMinutes = 15 + (hash % 28);
-    delayStatus = "moderate_delay";
-  } else if (bucket >= threshold + 20) {
-    delayMinutes = 45 + (hash % 65);
-    delayStatus = "severe_delay";
-  }
-
-  return {
-    flight_key: flightKey,
-    fl_date: flDate,
-    op_unique_carrier: carrier,
-    carrier_name: CARRIER_MAP[carrier] || `Carrier ${carrier}`,
-    tail_num: String(raw.TAIL_NUM || "—"),
-    op_carrier_fl_num: flNum,
-    flight_code: `${carrier} ${flNum}`,
-    origin,
-    dest,
-    route: `${origin} → ${dest}`,
-    crs_dep_time: crsDep,
-    crs_arr_time: crsArr,
-    crs_elapsed_time: Number(raw.CRS_ELAPSED_TIME || 120),
-    distance: Number(raw.DISTANCE || 800),
-    delay_minutes: delayMinutes,
-    delay_status: delayStatus,
-    is_delayed: delayMinutes >= 15 ? 1 : 0,
-    ingested_at: fetchedAt,
-  };
-}
-
 export default function Dashboard({ view }: { view: "overview" | "flights" | "forecast" }) {
   const isOverview = view === "overview";
   const isFlights = view === "flights";
@@ -172,8 +108,8 @@ export default function Dashboard({ view }: { view: "overview" | "flights" | "fo
   const [liveFlights, setLiveFlights] = useState<FlightItem[] | null>(null);
   const [serverMeta, setServerMeta] = useState<ServerFlightMeta | null>(null);
   const [apiReady, setApiReady] = useState<boolean | null>(null);
-  const [apiMode, setApiMode] = useState<"gateway" | "ingestion" | "simulator" | "demo">("demo");
-  const activeBackendRef = useRef<{ mode: "ingestion" | "gateway" | "simulator"; baseUrl: string } | null>(null);
+  const [apiMode, setApiMode] = useState<"gateway" | "ingestion" | "demo">("demo");
+  const activeBackendRef = useRef<{ mode: "ingestion" | "gateway"; baseUrl: string } | null>(null);
   const [batchMeta, setBatchMeta] = useState<{
     total_stored?: number;
     window_start?: number;
@@ -213,13 +149,6 @@ export default function Dashboard({ view }: { view: "overview" | "flights" | "fo
     if (debouncedSearch.trim()) params.set("search", debouncedSearch.trim());
 
     const qs = params.toString();
-
-    // Nếu trước đó đã xác định chỉ có Data Simulator (port 8000) đang bật và không ép dò lại:
-    // không gọi 3 request vô ích tới port 8004/8080 mỗi lần đổi filter!
-    if (!forceRediscover && activeBackendRef.current?.mode === "simulator") {
-      setBusy(false);
-      return;
-    }
 
     const ingestionCandidates =
       !forceRediscover &&
@@ -270,51 +199,12 @@ export default function Dashboard({ view }: { view: "overview" | "flights" | "fo
       }
     }
 
-    // Fallback: Nếu service Ingestion (8004) chưa bật nhưng Data Simulator (8000) đang bật
-    for (const simBase of DIRECT_SIMULATOR_URLS) {
-      try {
-        const res = await fetch(`${simBase}/flights`, { cache: "no-store" });
-        if (!res.ok) continue;
-        const simJson = await res.json();
-        activeBackendRef.current = { mode: "simulator", baseUrl: simBase };
-        const rawList: Record<string, unknown>[] = simJson.data || [];
-        const fetchedAt = simJson.fetched_at || new Date().toISOString();
-        const incoming = rawList.map((r, i) => normalizeSimulatorRecord(r, fetchedAt, i));
-
-        setLiveFlights(prev => {
-          const existing = prev || [];
-          const existingKeys = new Set(existing.map(item => item.flight_key));
-          const newItems = incoming.filter(item => !existingKeys.has(item.flight_key));
-          const merged = [...newItems, ...existing];
-          setBatchMeta({
-            total_stored: merged.length,
-            window_start: simJson.window_start,
-            window_end: simJson.window_end,
-            inserted_count: newItems.length,
-            duplicate_count: incoming.length - newItems.length,
-          });
-          return merged;
-        });
-        setServerMeta(null);
-        setApiMode("simulator");
-        setApiReady(true);
-        setUpdated(fetchedAt.replace("T", " ").replace("Z", " UTC"));
-        setBusy(false);
-        if (!silent) {
-          notify(`Đã thu thập cửa sổ [${simJson.window_start}..${simJson.window_end}] từ Simulator (port 8000)!`);
-        }
-        return;
-      } catch {
-        // try next
-      }
-    }
-
     setServerMeta(null);
     setApiMode("demo");
     setApiReady(null);
     setBusy(false);
     if (!silent) {
-      notify("Đang hiển thị dữ liệu mẫu (hãy bật port 8004 hoặc 8000 để lấy API thật).");
+      notify("Đang hiển thị dữ liệu mẫu (hãy bật Gateway 8080 hoặc Ingestion 8004 để lấy API thật).");
     }
   }, [airport, destAirport, carrier, flightStatus, debouncedSearch, sort, currentPage, pageSize]);
 
@@ -366,7 +256,7 @@ export default function Dashboard({ view }: { view: "overview" | "flights" | "fo
   // Dữ liệu cho trang Danh sách Chuyến bay (FE · Chuyến bay - STT 15)
   // Khi kết nối Backend Ingestion/Gateway: 100% Search, Filter, Sort & Pagination do SQL xử lý (isServerSide = true)
   const isServerSide = (apiMode === "ingestion" || apiMode === "gateway") && serverMeta !== null;
-  const fallbackFlightSource: FlightItem[] = apiMode === "simulator" && liveFlights !== null ? liveFlights : demoFlights;
+  const fallbackFlightSource: FlightItem[] = demoFlights;
 
   const uniqueOrigins = isServerSide
     ? serverMeta.available_filters?.origins || []
