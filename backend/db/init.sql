@@ -1,6 +1,62 @@
 -- Initial Database Schema for The Flight Observatory Platform
 -- Automatically executed by PostgreSQL container on first startup.
 
+-- =============================================================================
+-- 1. RAW DATABASE TABLES (Data Simulator Source & Sliding Window Cursor)
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS raw_source_files (
+    file_id SERIAL PRIMARY KEY,
+    file_name TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    file_sha256 CHAR(64) UNIQUE NOT NULL,
+    file_size_bytes BIGINT NOT NULL,
+    total_rows INTEGER NOT NULL DEFAULT 0,
+    loaded_rows INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'PENDING',
+    loaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS raw_flights (
+    raw_id BIGSERIAL PRIMARY KEY,
+    file_id INTEGER NOT NULL REFERENCES raw_source_files(file_id) ON DELETE CASCADE,
+    row_number INTEGER NOT NULL,
+    day_of_week TEXT,
+    fl_date TEXT,
+    op_unique_carrier TEXT,
+    tail_num TEXT,
+    op_carrier_fl_num TEXT,
+    origin_airport_id TEXT,
+    origin_airport_seq_id TEXT,
+    origin_city_market_id TEXT,
+    origin TEXT,
+    dest_airport_id TEXT,
+    dest_airport_seq_id TEXT,
+    dest_city_market_id TEXT,
+    dest TEXT,
+    crs_dep_time TEXT,
+    crs_arr_time TEXT,
+    crs_elapsed_time TEXT,
+    distance TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (file_id, row_number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_raw_flights_file_row ON raw_flights(file_id, row_number);
+
+CREATE TABLE IF NOT EXISTS raw_simulator_state (
+    stream_name TEXT PRIMARY KEY,
+    window_start INTEGER NOT NULL DEFAULT 0,
+    window_size INTEGER NOT NULL DEFAULT 100,
+    slide_step INTEGER NOT NULL DEFAULT 20,
+    total_requests BIGINT NOT NULL DEFAULT 0,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- =============================================================================
+-- 2. CLEAN DATABASE TABLES (Ingestion, Clustering & Prediction)
+-- =============================================================================
+
 CREATE TABLE IF NOT EXISTS ingested_flights (
     flight_key TEXT PRIMARY KEY,
     fl_date TEXT NOT NULL,
@@ -107,3 +163,53 @@ CREATE TABLE IF NOT EXISTS cluster_assignments (
 
 CREATE INDEX IF NOT EXISTS idx_cluster_assign_run ON cluster_assignments(run_id, entity_type);
 CREATE INDEX IF NOT EXISTS idx_cluster_assign_cluster ON cluster_assignments(cluster_id);
+
+CREATE TABLE IF NOT EXISTS prediction_runs (
+    run_id TEXT PRIMARY KEY,
+    model_version TEXT NOT NULL,
+    regression_algorithm TEXT NOT NULL,
+    classification_algorithm TEXT NOT NULL,
+    source_flights_count INTEGER NOT NULL,
+    predicted_flights_count INTEGER NOT NULL,
+    high_risk_count INTEGER NOT NULL,
+    medium_risk_count INTEGER NOT NULL,
+    low_risk_count INTEGER NOT NULL,
+    avg_predicted_delay REAL NOT NULL,
+    avg_delay_probability REAL NOT NULL,
+    metrics_json TEXT NOT NULL,
+    feature_importance_json TEXT NOT NULL,
+    risk_by_carrier_json TEXT NOT NULL,
+    risk_by_hour_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_prediction_runs_created ON prediction_runs(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS flight_predictions (
+    run_id TEXT NOT NULL REFERENCES prediction_runs(run_id) ON DELETE CASCADE,
+    flight_key TEXT NOT NULL,
+    flight_code TEXT NOT NULL,
+    fl_date TEXT NOT NULL,
+    op_unique_carrier TEXT NOT NULL,
+    carrier_name TEXT NOT NULL,
+    origin TEXT NOT NULL,
+    dest TEXT NOT NULL,
+    route TEXT NOT NULL,
+    crs_dep_time TEXT,
+    dep_hour INTEGER,
+    distance REAL NOT NULL,
+    crs_elapsed_time REAL NOT NULL,
+    actual_delay_minutes REAL NOT NULL,
+    actual_delay_status TEXT NOT NULL,
+    predicted_delay_minutes REAL NOT NULL,
+    delay_probability REAL NOT NULL,
+    predicted_label TEXT NOT NULL,
+    risk_level TEXT NOT NULL,
+    top_risk_factors_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (run_id, flight_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_flight_pred_run_risk ON flight_predictions(run_id, risk_level);
+CREATE INDEX IF NOT EXISTS idx_flight_pred_origin ON flight_predictions(origin);
+CREATE INDEX IF NOT EXISTS idx_flight_pred_carrier ON flight_predictions(op_unique_carrier);
