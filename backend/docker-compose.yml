@@ -25,10 +25,17 @@ services:
     restart: unless-stopped
     ports:
       - "127.0.0.1:${SIMULATOR_PORT:-2003}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
     environment:
+      <<: *postgres-client
       CSV_PATH: /app/data/T_ONTIME_REPORTING_1.csv
       WINDOW_SIZE: "${SIMULATOR_WINDOW_SIZE:-100}"
       SLIDE_STEP: "${SIMULATOR_SLIDE_STEP:-20}"
+      CHUNK_SIZE: "${SIMULATOR_CHUNK_SIZE:-5000}"
+      QUEUE_MAXSIZE: "${SIMULATOR_QUEUE_MAXSIZE:-4}"
+      MAX_SEED_ROWS: "${SIMULATOR_MAX_SEED_ROWS:-0}"
     volumes:
       - ../data-simulator/data:/app/data:ro
     healthcheck:

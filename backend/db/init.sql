@@ -1,6 +1,62 @@
 -- Initial Database Schema for The Flight Observatory Platform
 -- Automatically executed by PostgreSQL container on first startup.
 
+-- =============================================================================
+-- 1. RAW DATABASE LAYER (Source of Truth for Data Simulator)
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS raw_source_files (
+    file_id SERIAL PRIMARY KEY,
+    file_name TEXT NOT NULL,
+    file_sha256 TEXT NOT NULL UNIQUE,
+    total_rows INTEGER NOT NULL DEFAULT 0,
+    loaded_rows INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'LOADING',
+    loaded_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS raw_flights (
+    raw_id BIGSERIAL PRIMARY KEY,
+    file_id INTEGER NOT NULL REFERENCES raw_source_files(file_id) ON DELETE CASCADE,
+    row_number INTEGER NOT NULL,
+    day_of_week TEXT,
+    fl_date TEXT,
+    op_unique_carrier TEXT,
+    carrier_name TEXT,
+    tail_num TEXT,
+    op_carrier_fl_num TEXT,
+    origin_airport_id TEXT,
+    origin_airport_seq_id TEXT,
+    origin_city_market_id TEXT,
+    origin TEXT,
+    dest_airport_id TEXT,
+    dest_airport_seq_id TEXT,
+    dest_city_market_id TEXT,
+    dest TEXT,
+    crs_dep_time TEXT,
+    crs_arr_time TEXT,
+    crs_elapsed_time TEXT,
+    distance TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE (file_id, row_number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_raw_flights_seek ON raw_flights(file_id, row_number);
+
+CREATE TABLE IF NOT EXISTS raw_simulator_state (
+    stream_name TEXT PRIMARY KEY,
+    file_id INTEGER NOT NULL REFERENCES raw_source_files(file_id) ON DELETE CASCADE,
+    window_start INTEGER NOT NULL DEFAULT 0,
+    default_window_size INTEGER NOT NULL DEFAULT 100,
+    default_step INTEGER NOT NULL DEFAULT 100,
+    total_requests BIGINT NOT NULL DEFAULT 0,
+    last_served_at TEXT
+);
+
+-- =============================================================================
+-- 2. CLEAN INGESTION LAYER (Normalized, Deduplicated & Enriched Flights)
+-- =============================================================================
+
 CREATE TABLE IF NOT EXISTS ingested_flights (
     flight_key TEXT PRIMARY KEY,
     fl_date TEXT NOT NULL,
@@ -45,6 +101,10 @@ CREATE TABLE IF NOT EXISTS ingestion_batches (
     total_stored INTEGER NOT NULL,
     created_at TEXT NOT NULL
 );
+
+-- =============================================================================
+-- 3. CLUSTERING LAYER (Unsupervised Airport & Route Archetypes)
+-- =============================================================================
 
 CREATE TABLE IF NOT EXISTS clustering_runs (
     run_id TEXT PRIMARY KEY,
@@ -107,3 +167,4 @@ CREATE TABLE IF NOT EXISTS cluster_assignments (
 
 CREATE INDEX IF NOT EXISTS idx_cluster_assign_run ON cluster_assignments(run_id, entity_type);
 CREATE INDEX IF NOT EXISTS idx_cluster_assign_cluster ON cluster_assignments(cluster_id);
+
