@@ -4,6 +4,7 @@ Raw Flight Data Store & Chunked Queue Worker for Data Simulator.
 - Uses bounded `asyncio.Queue` backpressure so Python RAM stays under ~15 MB even for 540k+ rows.
 - Uses PostgreSQL `COPY FROM STDIN` + `SET LOCAL synchronous_commit = off` (or SQLite `executemany` fallback).
 - Serves sliding-window batches via O(log N) keyset seek (`WHERE file_id = :fid AND row_number > :start AND row_number <= :end`).
+- All SQL queries are declared as static constants with parameterized placeholders (zero dynamic SQL string interpolation).
 """
 from __future__ import annotations
 
@@ -76,6 +77,13 @@ CREATE TABLE IF NOT EXISTS raw_simulator_state (
 );
 """
 
+POSTGRES_MIGRATION_SQL = """
+ALTER TABLE raw_flights ADD COLUMN IF NOT EXISTS origin_airport_seq_id TEXT;
+ALTER TABLE raw_flights ADD COLUMN IF NOT EXISTS origin_city_market_id TEXT;
+ALTER TABLE raw_flights ADD COLUMN IF NOT EXISTS dest_airport_seq_id TEXT;
+ALTER TABLE raw_flights ADD COLUMN IF NOT EXISTS dest_city_market_id TEXT;
+"""
+
 SQLITE_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS raw_source_files (
     file_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -126,29 +134,62 @@ CREATE TABLE IF NOT EXISTS raw_simulator_state (
 );
 """
 
-RAW_FLIGHT_INSERT_COLS = (
-    "file_id",
-    "row_number",
-    "day_of_week",
-    "fl_date",
-    "op_unique_carrier",
-    "carrier_name",
-    "tail_num",
-    "op_carrier_fl_num",
-    "origin_airport_id",
-    "origin_airport_seq_id",
-    "origin_city_market_id",
-    "origin",
-    "dest_airport_id",
-    "dest_airport_seq_id",
-    "dest_city_market_id",
-    "dest",
-    "crs_dep_time",
-    "crs_arr_time",
-    "crs_elapsed_time",
-    "distance",
-    "created_at",
+PG_COPY_RAW_FLIGHTS_SQL = """
+COPY raw_flights (
+    file_id, row_number, day_of_week, fl_date, op_unique_carrier, carrier_name,
+    tail_num, op_carrier_fl_num, origin_airport_id, origin_airport_seq_id,
+    origin_city_market_id, origin, dest_airport_id, dest_airport_seq_id,
+    dest_city_market_id, dest, crs_dep_time, crs_arr_time, crs_elapsed_time,
+    distance, created_at
+) FROM STDIN
+"""
+
+PG_INSERT_RAW_FLIGHTS_SQL = """
+INSERT INTO raw_flights (
+    file_id, row_number, day_of_week, fl_date, op_unique_carrier, carrier_name,
+    tail_num, op_carrier_fl_num, origin_airport_id, origin_airport_seq_id,
+    origin_city_market_id, origin, dest_airport_id, dest_airport_seq_id,
+    dest_city_market_id, dest, crs_dep_time, crs_arr_time, crs_elapsed_time,
+    distance, created_at
+) VALUES (
+    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+) ON CONFLICT (file_id, row_number) DO NOTHING
+"""
+
+SQLITE_INSERT_RAW_FLIGHTS_SQL = """
+INSERT OR IGNORE INTO raw_flights (
+    file_id, row_number, day_of_week, fl_date, op_unique_carrier, carrier_name,
+    tail_num, op_carrier_fl_num, origin_airport_id, origin_airport_seq_id,
+    origin_city_market_id, origin, dest_airport_id, dest_airport_seq_id,
+    dest_city_market_id, dest, crs_dep_time, crs_arr_time, crs_elapsed_time,
+    distance, created_at
+) VALUES (
+    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 )
+"""
+
+PG_SEEK_RANGE_SQL = """
+SELECT * FROM raw_flights
+WHERE file_id = %s
+  AND row_number > %s
+  AND row_number <= %s
+ORDER BY row_number ASC
+"""
+
+SQLITE_SEEK_RANGE_SQL = """
+SELECT * FROM raw_flights
+WHERE file_id = ?
+  AND row_number > ?
+  AND row_number <= ?
+ORDER BY row_number ASC
+"""
+
+PG_SELECT_SOURCE_FILE_SQL = "SELECT * FROM raw_source_files WHERE file_id = %s"
+SQLITE_SELECT_SOURCE_FILE_SQL = "SELECT * FROM raw_source_files WHERE file_id = ?"
+PG_SELECT_SIMULATOR_STATE_SQL = "SELECT * FROM raw_simulator_state WHERE stream_name = %s"
+SQLITE_SELECT_SIMULATOR_STATE_SQL = "SELECT * FROM raw_simulator_state WHERE stream_name = ?"
 
 
 def resolve_first_csv(csv_path: str) -> Path:
@@ -280,14 +321,7 @@ class RawFlightStore:
             with self._connect_postgres() as conn:
                 with conn.cursor() as cur:
                     cur.execute(POSTGRES_SCHEMA_SQL)
-                    # Ensure extra airport sequence/market columns exist if table was created earlier
-                    for col in (
-                        "origin_airport_seq_id",
-                        "origin_city_market_id",
-                        "dest_airport_seq_id",
-                        "dest_city_market_id",
-                    ):
-                        cur.execute(f"ALTER TABLE raw_flights ADD COLUMN IF NOT EXISTS {col} TEXT")
+                    cur.execute(POSTGRES_MIGRATION_SQL)
                 conn.commit()
         else:
             with self._connect_sqlite() as conn:
@@ -438,36 +472,28 @@ class RawFlightStore:
         max_row_in_chunk = int(chunk[-1][1])
         new_loaded = max(self.loaded_rows, max_row_in_chunk)
         new_status = "READY" if new_loaded >= self.total_rows else "LOADING"
-        cols_csv = ", ".join(RAW_FLIGHT_INSERT_COLS)
 
         if self.is_postgres:
             with self._connect_postgres() as conn:
                 with conn.cursor() as cur:
                     cur.execute("SET LOCAL synchronous_commit = off")
                     try:
-                        with cur.copy(f"COPY raw_flights ({cols_csv}) FROM STDIN") as copy:
+                        with cur.copy(PG_COPY_RAW_FLIGHTS_SQL) as copy:
                             for row_tuple in chunk:
                                 copy.write_row(row_tuple)
                     except Exception:
                         conn.rollback()
                         cur.execute("SET LOCAL synchronous_commit = off")
-                        placeholders = ", ".join(["%s"] * len(RAW_FLIGHT_INSERT_COLS))
-                        cur.executemany(
-                            f"INSERT INTO raw_flights ({cols_csv}) VALUES ({placeholders}) "
-                            "ON CONFLICT (file_id, row_number) DO NOTHING",
-                            chunk,
-                        )
+                        cur.executemany(PG_INSERT_RAW_FLIGHTS_SQL, chunk)
                     cur.execute(
                         "UPDATE raw_source_files SET loaded_rows = %s, status = %s WHERE file_id = %s",
                         (new_loaded, new_status, self.file_id),
                     )
                 conn.commit()
         else:
-            placeholders = ", ".join(["?"] * len(RAW_FLIGHT_INSERT_COLS))
-            sql = f"INSERT OR IGNORE INTO raw_flights ({cols_csv}) VALUES ({placeholders})"
             with self._connect_sqlite() as conn:
                 cur = conn.cursor()
-                cur.executemany(sql, chunk)
+                cur.executemany(SQLITE_INSERT_RAW_FLIGHTS_SQL, chunk)
                 cur.execute(
                     "UPDATE raw_source_files SET loaded_rows = ?, status = ? WHERE file_id = ?",
                     (new_loaded, new_status, self.file_id),
@@ -575,14 +601,7 @@ class RawFlightStore:
     def _seek_range(self, cur: Any, low_exclusive: int, high_inclusive: int) -> list[dict[str, Any]]:
         if high_inclusive <= low_exclusive:
             return []
-        ph = "%s" if self.is_postgres else "?"
-        sql = f"""
-            SELECT * FROM raw_flights
-            WHERE file_id = {ph}
-              AND row_number > {ph}
-              AND row_number <= {ph}
-            ORDER BY row_number ASC
-        """
+        sql = PG_SEEK_RANGE_SQL if self.is_postgres else SQLITE_SEEK_RANGE_SQL
         cur.execute(sql, (self.file_id, low_exclusive, high_inclusive))
         return [_db_row_to_api_dict(dict(r)) for r in cur.fetchall()]
 
@@ -702,23 +721,19 @@ class RawFlightStore:
 
     def get_status(self) -> dict[str, Any]:
         """Return health & checkpoint status from Raw DB."""
-        ph = "%s" if self.is_postgres else "?"
-        src_sql = f"SELECT * FROM raw_source_files WHERE file_id = {ph}"
-        st_sql = f"SELECT * FROM raw_simulator_state WHERE stream_name = {ph}"
-
         if self.is_postgres:
             with self._connect_postgres() as conn:
                 with conn.cursor() as cur:
-                    cur.execute(src_sql, (self.file_id,))
+                    cur.execute(PG_SELECT_SOURCE_FILE_SQL, (self.file_id,))
                     src = dict(cur.fetchone() or {})
-                    cur.execute(st_sql, (self.stream_name,))
+                    cur.execute(PG_SELECT_SIMULATOR_STATE_SQL, (self.stream_name,))
                     st = dict(cur.fetchone() or {})
         else:
             with self._connect_sqlite() as conn:
                 cur = conn.cursor()
-                cur.execute(src_sql, (self.file_id,))
+                cur.execute(SQLITE_SELECT_SOURCE_FILE_SQL, (self.file_id,))
                 src = dict(cur.fetchone() or {})
-                cur.execute(st_sql, (self.stream_name,))
+                cur.execute(SQLITE_SELECT_SIMULATOR_STATE_SQL, (self.stream_name,))
                 st = dict(cur.fetchone() or {})
 
         loaded_rows = int(src.get("loaded_rows") or self.loaded_rows)
