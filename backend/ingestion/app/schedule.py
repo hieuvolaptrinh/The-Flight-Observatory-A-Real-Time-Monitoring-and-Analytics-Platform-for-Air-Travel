@@ -167,3 +167,78 @@ def save_flight(db, flight: Flight) -> None:
                 "arr_delay_min": delay_val,
             },
         )
+
+
+def save_flights_batch(db, flights: tuple[Flight, ...] | list[Flight]) -> None:
+    """
+    Persist a batch of scheduled flights by deduplicating airlines and airports in memory first,
+    avoiding redundant SQL round-trips across flights in the same batch.
+    """
+    if not flights:
+        return
+
+    unique_airlines: dict[str, str | None] = {}
+    unique_airports: dict[int, tuple[int, str, int]] = {}
+
+    for flight in flights:
+        carrier = flight.OP_UNIQUE_CARRIER.strip().upper()
+        carrier_name = (flight.CARRIER_NAME or "").strip() or None
+        if carrier not in unique_airlines or (unique_airlines[carrier] is None and carrier_name is not None):
+            unique_airlines[carrier] = carrier_name
+
+        for airport_id, seq_id, code, market_id in (
+            (flight.ORIGIN_AIRPORT_ID, flight.ORIGIN_AIRPORT_SEQ_ID, flight.ORIGIN, flight.ORIGIN_CITY_MARKET_ID),
+            (flight.DEST_AIRPORT_ID, flight.DEST_AIRPORT_SEQ_ID, flight.DEST, flight.DEST_CITY_MARKET_ID),
+        ):
+            unique_airports[seq_id] = (airport_id, code, market_id)
+
+    for carrier, carrier_name in sorted(unique_airlines.items()):
+        db.execute(
+            UPSERT_AIRLINE_SQL,
+            {"carrier_code": carrier, "carrier_name": carrier_name},
+        )
+
+    for seq_id, (airport_id, code, market_id) in sorted(unique_airports.items(), key=lambda kv: (kv[1][0], kv[0])):
+        airport_params = {
+            "airport_id": airport_id,
+            "airport_seq_id": seq_id,
+            "airport_code": code,
+            "city_market_id": market_id,
+        }
+        db.execute(INSERT_AIRPORT_SQL, {"airport_id": airport_id})
+        db.execute(INSERT_AIRPORT_VERSION_SQL, airport_params)
+        db.execute(VERIFY_AIRPORT_VERSION_SQL, airport_params)
+        if db.fetchone() is None:
+            raise ValueError("Conflicting simulator airport version")
+
+    for flight in flights:
+        carrier = flight.OP_UNIQUE_CARRIER.strip().upper()
+        db.execute(
+            UPSERT_FLIGHT_SCHEDULE_SQL,
+            {
+                "flight_date": flight.FL_DATE,
+                "carrier_code": carrier,
+                "flight_number": str(flight.OP_CARRIER_FL_NUM).strip(),
+                "tail_number": flight.TAIL_NUM or None,
+                "origin_airport_id": flight.ORIGIN_AIRPORT_ID,
+                "origin_airport_seq_id": flight.ORIGIN_AIRPORT_SEQ_ID,
+                "dest_airport_id": flight.DEST_AIRPORT_ID,
+                "dest_airport_seq_id": flight.DEST_AIRPORT_SEQ_ID,
+                "scheduled_dep_local": hhmm(flight.CRS_DEP_TIME),
+                "scheduled_arr_local": hhmm(flight.CRS_ARR_TIME),
+                "scheduled_elapsed_min": flight.CRS_ELAPSED_TIME,
+                "distance_miles": flight.DISTANCE,
+            },
+        )
+        flight_row = db.fetchone()
+        if flight_row is not None:
+            flight_id = flight_row["flight_id"] if isinstance(flight_row, dict) else flight_row[0]
+            delay_val = round(float(flight.DELAY_MINUTES or 0.0), 2)
+            db.execute(
+                UPSERT_FLIGHT_OUTCOME_SQL,
+                {
+                    "flight_id": flight_id,
+                    "dep_delay_min": delay_val,
+                    "arr_delay_min": delay_val,
+                },
+            )

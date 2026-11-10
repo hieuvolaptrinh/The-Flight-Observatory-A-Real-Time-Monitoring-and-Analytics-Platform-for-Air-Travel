@@ -520,6 +520,29 @@ class RawFlightStore:
                     break
         return chunk
 
+    def _iter_csv_chunks(self, start_row_exclusive: int, chunk_size: int):
+        """
+        Open the CSV file ONCE and keep the file pointer moving forward sequentially (O(N)).
+        Skips `start_row_exclusive` rows only once when resuming from a checkpoint,
+        then yields chunks of `chunk_size` rows without ever re-opening or re-scanning from line 1.
+        """
+        with open(self.csv_file, newline="", encoding="utf-8-sig") as f:
+            reader = csv.DictReader(f)
+            now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            chunk: list[tuple[Any, ...]] = []
+            for idx, row in enumerate(reader, start=1):
+                if idx <= start_row_exclusive:
+                    continue
+                if idx > self.total_rows:
+                    break
+                chunk.append(_row_to_raw_tuple(self.file_id, idx, row, now_iso))
+                if len(chunk) >= chunk_size:
+                    yield chunk
+                    chunk = []
+                    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            if chunk:
+                yield chunk
+
     def seed_initial_chunk_sync(self) -> int:
         """
         Synchronously seed the first chunk (e.g. 5,000 rows in ~50ms) if `loaded_rows == 0`
@@ -536,7 +559,7 @@ class RawFlightStore:
     async def run_background_queue_worker(self) -> None:
         """
         Stream remaining CSV rows (`loaded_rows + 1 .. total_rows`) into `raw_flights`
-        using a bounded `asyncio.Queue(maxsize=self.queue_maxsize)` producer-consumer pipeline.
+        using a single-pass CSV chunk iterator and a bounded `asyncio.Queue(maxsize=self.queue_maxsize)`.
         """
         if self.loaded_rows >= self.total_rows:
             log.info(
@@ -560,15 +583,15 @@ class RawFlightStore:
         queue: asyncio.Queue[list[tuple[Any, ...]] | None] = asyncio.Queue(maxsize=self.queue_maxsize)
 
         async def _producer() -> None:
-            cursor = start_from
-            while cursor < self.total_rows:
-                batch_limit = min(self.chunk_size, self.total_rows - cursor)
-                chunk = await asyncio.to_thread(self._read_csv_chunk_range, cursor, batch_limit)
-                if not chunk:
-                    break
-                cursor = int(chunk[-1][1])
-                await queue.put(chunk)
-            await queue.put(None)
+            chunk_iter = self._iter_csv_chunks(start_from, self.chunk_size)
+            try:
+                while True:
+                    chunk = await asyncio.to_thread(next, chunk_iter, None)
+                    if chunk is None:
+                        break
+                    await queue.put(chunk)
+            finally:
+                await queue.put(None)
 
         async def _consumer() -> None:
             chunks_written = 0

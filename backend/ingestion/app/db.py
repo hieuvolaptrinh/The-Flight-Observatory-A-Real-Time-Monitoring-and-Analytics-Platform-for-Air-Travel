@@ -13,7 +13,7 @@ from pathlib import Path
 import sqlite3
 from typing import Any
 
-from app.schedule import Flight, ReplayPosition, save_flight
+from app.schedule import Flight, ReplayPosition, save_flights_batch
 
 logger = logging.getLogger(__name__)
 
@@ -114,9 +114,9 @@ SELECT
     AVG(crs_elapsed_time) AS avg_elapsed_time,
     MAX(ingested_at) AS latest_ingested_at
 FROM ingested_flights
-WHERE (%(origin)s::text IS NULL OR UPPER(origin) = UPPER(%(origin)s))
-  AND (%(dest)s::text IS NULL OR UPPER(dest) = UPPER(%(dest)s))
-  AND (%(carrier)s::text IS NULL OR UPPER(op_unique_carrier) = UPPER(%(carrier)s))
+WHERE (%(origin)s::text IS NULL OR origin = %(origin)s)
+  AND (%(dest)s::text IS NULL OR dest = %(dest)s)
+  AND (%(carrier)s::text IS NULL OR op_unique_carrier = %(carrier)s)
   AND (%(status)s::text IS NULL OR delay_status = %(status)s)
   AND (
       %(search)s::text IS NULL
@@ -140,9 +140,9 @@ SELECT
     AVG(crs_elapsed_time) AS avg_elapsed_time,
     MAX(ingested_at) AS latest_ingested_at
 FROM ingested_flights
-WHERE (:origin IS NULL OR UPPER(origin) = UPPER(:origin))
-  AND (:dest IS NULL OR UPPER(dest) = UPPER(:dest))
-  AND (:carrier IS NULL OR UPPER(op_unique_carrier) = UPPER(:carrier))
+WHERE (:origin IS NULL OR origin = :origin)
+  AND (:dest IS NULL OR dest = :dest)
+  AND (:carrier IS NULL OR op_unique_carrier = :carrier)
   AND (:status IS NULL OR delay_status = :status)
   AND (
       :search IS NULL
@@ -160,9 +160,9 @@ SELECT
     AVG(delay_minutes) AS avg_delay,
     COUNT(*) AS flight_count
 FROM ingested_flights
-WHERE (%(origin)s::text IS NULL OR UPPER(origin) = UPPER(%(origin)s))
-  AND (%(dest)s::text IS NULL OR UPPER(dest) = UPPER(%(dest)s))
-  AND (%(carrier)s::text IS NULL OR UPPER(op_unique_carrier) = UPPER(%(carrier)s))
+WHERE (%(origin)s::text IS NULL OR origin = %(origin)s)
+  AND (%(dest)s::text IS NULL OR dest = %(dest)s)
+  AND (%(carrier)s::text IS NULL OR op_unique_carrier = %(carrier)s)
   AND (%(status)s::text IS NULL OR delay_status = %(status)s)
   AND (
       %(search)s::text IS NULL
@@ -183,9 +183,9 @@ SELECT
     AVG(delay_minutes) AS avg_delay,
     COUNT(*) AS flight_count
 FROM ingested_flights
-WHERE (:origin IS NULL OR UPPER(origin) = UPPER(:origin))
-  AND (:dest IS NULL OR UPPER(dest) = UPPER(:dest))
-  AND (:carrier IS NULL OR UPPER(op_unique_carrier) = UPPER(:carrier))
+WHERE (:origin IS NULL OR origin = :origin)
+  AND (:dest IS NULL OR dest = :dest)
+  AND (:carrier IS NULL OR op_unique_carrier = :carrier)
   AND (:status IS NULL OR delay_status = :status)
   AND (
       :search IS NULL
@@ -203,9 +203,9 @@ LIMIT 8
 PG_ITEMS_SQL_BY_SORT: dict[str, str] = {
     "time": """
         SELECT * FROM ingested_flights
-        WHERE (%(origin)s::text IS NULL OR UPPER(origin) = UPPER(%(origin)s))
-          AND (%(dest)s::text IS NULL OR UPPER(dest) = UPPER(%(dest)s))
-          AND (%(carrier)s::text IS NULL OR UPPER(op_unique_carrier) = UPPER(%(carrier)s))
+        WHERE (%(origin)s::text IS NULL OR origin = %(origin)s)
+          AND (%(dest)s::text IS NULL OR dest = %(dest)s)
+          AND (%(carrier)s::text IS NULL OR op_unique_carrier = %(carrier)s)
           AND (%(status)s::text IS NULL OR delay_status = %(status)s)
           AND (
               %(search)s::text IS NULL
@@ -220,9 +220,9 @@ PG_ITEMS_SQL_BY_SORT: dict[str, str] = {
     """,
     "delay": """
         SELECT * FROM ingested_flights
-        WHERE (%(origin)s::text IS NULL OR UPPER(origin) = UPPER(%(origin)s))
-          AND (%(dest)s::text IS NULL OR UPPER(dest) = UPPER(%(dest)s))
-          AND (%(carrier)s::text IS NULL OR UPPER(op_unique_carrier) = UPPER(%(carrier)s))
+        WHERE (%(origin)s::text IS NULL OR origin = %(origin)s)
+          AND (%(dest)s::text IS NULL OR dest = %(dest)s)
+          AND (%(carrier)s::text IS NULL OR op_unique_carrier = %(carrier)s)
           AND (%(status)s::text IS NULL OR delay_status = %(status)s)
           AND (
               %(search)s::text IS NULL
@@ -237,9 +237,9 @@ PG_ITEMS_SQL_BY_SORT: dict[str, str] = {
     """,
     "distance": """
         SELECT * FROM ingested_flights
-        WHERE (%(origin)s::text IS NULL OR UPPER(origin) = UPPER(%(origin)s))
-          AND (%(dest)s::text IS NULL OR UPPER(dest) = UPPER(%(dest)s))
-          AND (%(carrier)s::text IS NULL OR UPPER(op_unique_carrier) = UPPER(%(carrier)s))
+        WHERE (%(origin)s::text IS NULL OR origin = %(origin)s)
+          AND (%(dest)s::text IS NULL OR dest = %(dest)s)
+          AND (%(carrier)s::text IS NULL OR op_unique_carrier = %(carrier)s)
           AND (%(status)s::text IS NULL OR delay_status = %(status)s)
           AND (
               %(search)s::text IS NULL
@@ -257,9 +257,9 @@ PG_ITEMS_SQL_BY_SORT: dict[str, str] = {
 SQLITE_ITEMS_SQL_BY_SORT: dict[str, str] = {
     "time": """
         SELECT * FROM ingested_flights
-        WHERE (:origin IS NULL OR UPPER(origin) = UPPER(:origin))
-          AND (:dest IS NULL OR UPPER(dest) = UPPER(:dest))
-          AND (:carrier IS NULL OR UPPER(op_unique_carrier) = UPPER(:carrier))
+        WHERE (:origin IS NULL OR origin = :origin)
+          AND (:dest IS NULL OR dest = :dest)
+          AND (:carrier IS NULL OR op_unique_carrier = :carrier)
           AND (:status IS NULL OR delay_status = :status)
           AND (
               :search IS NULL
@@ -274,9 +274,9 @@ SQLITE_ITEMS_SQL_BY_SORT: dict[str, str] = {
     """,
     "delay": """
         SELECT * FROM ingested_flights
-        WHERE (:origin IS NULL OR UPPER(origin) = UPPER(:origin))
-          AND (:dest IS NULL OR UPPER(dest) = UPPER(:dest))
-          AND (:carrier IS NULL OR UPPER(op_unique_carrier) = UPPER(:carrier))
+        WHERE (:origin IS NULL OR origin = :origin)
+          AND (:dest IS NULL OR dest = :dest)
+          AND (:carrier IS NULL OR op_unique_carrier = :carrier)
           AND (:status IS NULL OR delay_status = :status)
           AND (
               :search IS NULL
@@ -291,9 +291,9 @@ SQLITE_ITEMS_SQL_BY_SORT: dict[str, str] = {
     """,
     "distance": """
         SELECT * FROM ingested_flights
-        WHERE (:origin IS NULL OR UPPER(origin) = UPPER(:origin))
-          AND (:dest IS NULL OR UPPER(dest) = UPPER(:dest))
-          AND (:carrier IS NULL OR UPPER(op_unique_carrier) = UPPER(:carrier))
+        WHERE (:origin IS NULL OR origin = :origin)
+          AND (:dest IS NULL OR dest = :dest)
+          AND (:carrier IS NULL OR op_unique_carrier = :carrier)
           AND (:status IS NULL OR delay_status = :status)
           AND (
               :search IS NULL
@@ -387,8 +387,8 @@ class FlightRepository:
                         """, (replay.source,))
                         if cur.fetchone()["next_start"] != replay.start:
                             raise RuntimeError("Another ingestion run advanced the simulator offset")
-                    for flight in scheduled:
-                        save_flight(cur, flight)
+                    if scheduled:
+                        save_flights_batch(cur, scheduled)
                     if param_rows:
                         cur.executemany(PG_INSERT_INGESTED_FLIGHT_SQL, param_rows)
                         inserted = cur.rowcount
@@ -471,9 +471,9 @@ class FlightRepository:
     ) -> dict[str, Any]:
         """Query flights from DB with parameterized filters, whitelist sorting, pagination, and KPIs."""
         filter_params: dict[str, Any] = {
-            "origin": origin.strip() if (origin and origin.strip().lower() != "all") else None,
-            "dest": dest.strip() if (dest and dest.strip().lower() != "all") else None,
-            "carrier": carrier.strip() if (carrier and carrier.strip().lower() != "all") else None,
+            "origin": origin.strip().upper() if (origin and origin.strip().lower() != "all") else None,
+            "dest": dest.strip().upper() if (dest and dest.strip().lower() != "all") else None,
+            "carrier": carrier.strip().upper() if (carrier and carrier.strip().lower() != "all") else None,
             "status": status.strip() if (status and status.strip().lower() != "all") else None,
             "search": f"%{search.strip().upper()}%" if (search and search.strip()) else None,
         }
