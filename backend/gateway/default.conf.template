@@ -18,6 +18,7 @@ server {
     set $clustering_upstream http://clustering:8000;
     set $prediction_upstream http://prediction:8000;
     set $ingestion_upstream http://ingestion:8000;
+    set $simulator_upstream http://data-simulator:8000;
 
     proxy_http_version 1.1;
     proxy_set_header Host $http_host;
@@ -87,6 +88,15 @@ server {
     location /api/ingestion/ {
         rewrite ^/api/ingestion/(.*)$ /$1 break;
         proxy_pass $ingestion_upstream;
+    }
+
+    location = /api/simulator {
+        return 308 /api/simulator/$is_args$args;
+    }
+
+    location /api/simulator/ {
+        rewrite ^/api/simulator/(.*)$ /$1 break;
+        proxy_pass $simulator_upstream;
     }
 
     location / {

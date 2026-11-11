@@ -30,7 +30,7 @@ services:
         condition: service_healthy
     environment:
       <<: *postgres-client
-      CSV_PATH: /app/data/T_ONTIME_REPORTING_1.csv
+      CSV_PATH: /app/data/flight_weather_2025_01.csv
       WINDOW_SIZE: "${SIMULATOR_WINDOW_SIZE:-100}"
       SLIDE_STEP: "${SIMULATOR_SLIDE_STEP:-20}"
       CHUNK_SIZE: "${SIMULATOR_CHUNK_SIZE:-5000}"
@@ -62,6 +62,8 @@ services:
       prediction:
         condition: service_healthy
       ingestion:
+        condition: service_healthy
+      data-simulator:
         condition: service_healthy
     networks:
       - backend
@@ -108,6 +110,8 @@ services:
         condition: service_healthy
       ingestion:
         condition: service_healthy
+      data-simulator:
+        condition: service_healthy
     volumes:
       - clustering_models:/service/models
       - ../data-simulator/data:/data-source:ro
@@ -118,7 +122,7 @@ services:
       SCHEDULER_ENABLED: "${CLUSTERING_SCHEDULER_ENABLED:-true}"
       RUN_ON_STARTUP: "${CLUSTERING_RUN_ON_STARTUP:-true}"
       JOB_INTERVAL_SECONDS: "${CLUSTERING_INTERVAL_SECONDS:-86400}"
-      FALLBACK_CSV_PATH: /data-source/T_ONTIME_REPORTING_1.csv
+      FALLBACK_CSV_PATH: /data-source/flight_weather_2025_01.csv
       MODEL_PATH: /service/models/clustering_bundle.joblib
 
   prediction:
@@ -126,11 +130,21 @@ services:
     build: ./prediction
     ports:
       - "127.0.0.1:${PREDICTION_PORT:-2007}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - prediction_models:/service/models
+      - ../data-simulator/data:/data-source:ro
     environment:
+      <<: *postgres-client
       SERVICE_NAME: prediction
       ROOT_PATH: /api/prediction
-      SCHEDULER_ENABLED: "${PREDICTION_SCHEDULER_ENABLED:-false}"
+      SCHEDULER_ENABLED: "${PREDICTION_SCHEDULER_ENABLED:-true}"
+      RUN_ON_STARTUP: "${PREDICTION_RUN_ON_STARTUP:-true}"
       JOB_INTERVAL_SECONDS: "${PREDICTION_INTERVAL_SECONDS:-300}"
+      FALLBACK_CSV_PATH: /data-source/flight_weather_2025_01.csv
+      MODEL_PATH: /service/models/prediction_bundle.joblib
 
   ingestion:
     <<: *worker
@@ -153,8 +167,9 @@ services:
       JOB_INTERVAL_SECONDS: "${INGESTION_INTERVAL_SECONDS:-300}"
       SIMULATOR_BASE_URL: "${SIMULATOR_BASE_URL:-http://data-simulator:8000}"
       INGESTION_BATCH_SIZE: "${INGESTION_BATCH_SIZE:-5}"
-      FALLBACK_CSV_PATH: /data-source/T_ONTIME_REPORTING_1.csv
+      FALLBACK_CSV_PATH: /data-source/flight_weather_2025_01.csv
       TRIGGER_DOWNSTREAM_URLS: "${TRIGGER_DOWNSTREAM_URLS-http://clustering:8000/run}"
 
 volumes:
   clustering_models:
+  prediction_models:
