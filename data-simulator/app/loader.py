@@ -19,13 +19,34 @@ from typing import Any
 
 log = logging.getLogger("simulator.loader")
 
-REQUIRED_COLS = {
-    "DAY_OF_WEEK", "FL_DATE", "OP_UNIQUE_CARRIER", "TAIL_NUM",
-    "OP_CARRIER_FL_NUM", "ORIGIN_AIRPORT_ID", "ORIGIN_AIRPORT_SEQ_ID",
-    "ORIGIN_CITY_MARKET_ID", "ORIGIN", "DEST_AIRPORT_ID",
-    "DEST_AIRPORT_SEQ_ID", "DEST_CITY_MARKET_ID", "DEST",
-    "CRS_DEP_TIME", "CRS_ARR_TIME", "CRS_ELAPSED_TIME", "DISTANCE",
-}
+# Core fields required to identify flight schedules (at least one alias must be present)
+CORE_FIELDS = [
+    ("FL_DATE", "FlightDate"),
+    ("OP_UNIQUE_CARRIER", "Reporting_Airline"),
+    ("ORIGIN", "Origin"),
+    ("DEST", "Dest"),
+]
+
+def airport_to_id(code: str | None) -> str:
+    """Deterministically maps a 3-letter IATA code to a unique integer ID (10000 - 27575)."""
+    if not code:
+        return "10000"
+    c = code.strip().upper()
+    if len(c) >= 3 and c[:3].isalpha():
+        return str(10000 + (ord(c[0]) - 65) * 676 + (ord(c[1]) - 65) * 26 + (ord(c[2]) - 65))
+    val = 10000
+    for ch in c:
+        val = (val * 31 + ord(ch)) % 80000
+    return str(val + 10000)
+
+def _get_val(row: dict[str, Any], *keys: str) -> str | None:
+    """Return the first non-empty value matching any of the provided alias keys."""
+    for k in keys:
+        if k in row and row[k] is not None:
+            v = str(row[k]).strip()
+            if v != "":
+                return v
+    return None
 
 POSTGRES_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS raw_source_files (
@@ -211,27 +232,32 @@ def _clean_raw_cell(val: str | None) -> str | None:
 
 
 def _row_to_raw_tuple(file_id: int, row_number: int, row: dict[str, Any], created_at: str) -> tuple[Any, ...]:
+    origin = _get_val(row, "ORIGIN", "Origin")
+    dest = _get_val(row, "DEST", "Dest")
+    origin_id = _get_val(row, "ORIGIN_AIRPORT_ID", "OriginAirportID") or airport_to_id(origin)
+    dest_id = _get_val(row, "DEST_AIRPORT_ID", "DestAirportID") or airport_to_id(dest)
+
     return (
         file_id,
         row_number,
-        _clean_raw_cell(row.get("DAY_OF_WEEK")),
-        _clean_raw_cell(row.get("FL_DATE")),
-        _clean_raw_cell(row.get("OP_UNIQUE_CARRIER")),
-        _clean_raw_cell(row.get("CARRIER_NAME")),
-        _clean_raw_cell(row.get("TAIL_NUM")),
-        _clean_raw_cell(row.get("OP_CARRIER_FL_NUM")),
-        _clean_raw_cell(row.get("ORIGIN_AIRPORT_ID")),
-        _clean_raw_cell(row.get("ORIGIN_AIRPORT_SEQ_ID")),
-        _clean_raw_cell(row.get("ORIGIN_CITY_MARKET_ID")),
-        _clean_raw_cell(row.get("ORIGIN")),
-        _clean_raw_cell(row.get("DEST_AIRPORT_ID")),
-        _clean_raw_cell(row.get("DEST_AIRPORT_SEQ_ID")),
-        _clean_raw_cell(row.get("DEST_CITY_MARKET_ID")),
-        _clean_raw_cell(row.get("DEST")),
-        _clean_raw_cell(row.get("CRS_DEP_TIME")),
-        _clean_raw_cell(row.get("CRS_ARR_TIME")),
-        _clean_raw_cell(row.get("CRS_ELAPSED_TIME")),
-        _clean_raw_cell(row.get("DISTANCE")),
+        _get_val(row, "DAY_OF_WEEK", "DayOfWeek"),
+        _get_val(row, "FL_DATE", "FlightDate"),
+        _get_val(row, "OP_UNIQUE_CARRIER", "Reporting_Airline"),
+        _get_val(row, "CARRIER_NAME", "carrier_name"),
+        _get_val(row, "TAIL_NUM", "Tail_Number"),
+        _get_val(row, "OP_CARRIER_FL_NUM", "Flight_Number_Reporting_Airline"),
+        origin_id,
+        _get_val(row, "ORIGIN_AIRPORT_SEQ_ID", "OriginAirportSeqID") or f"{origin_id}01",
+        _get_val(row, "ORIGIN_CITY_MARKET_ID", "OriginCityMarketID") or f"{origin_id}99",
+        origin,
+        dest_id,
+        _get_val(row, "DEST_AIRPORT_SEQ_ID", "DestAirportSeqID") or f"{dest_id}01",
+        _get_val(row, "DEST_CITY_MARKET_ID", "DestCityMarketID") or f"{dest_id}99",
+        dest,
+        _get_val(row, "CRS_DEP_TIME", "CRSDepTime"),
+        _get_val(row, "CRS_ARR_TIME", "CRSArrTime"),
+        _get_val(row, "CRS_ELAPSED_TIME", "CRSElapsedTime"),
+        _get_val(row, "DISTANCE", "Distance"),
         created_at,
     )
 
@@ -339,9 +365,9 @@ class RawFlightStore:
         with open(self.csv_file, newline="", encoding="utf-8-sig") as f:
             reader = csv.DictReader(f)
             cols = set(reader.fieldnames or [])
-            missing = REQUIRED_COLS - cols
-            if missing:
-                raise ValueError(f"{self.csv_file.name} thiếu cột: {missing}")
+            for field_group in CORE_FIELDS:
+                if not any(f in cols for f in field_group):
+                    raise ValueError(f"{self.csv_file.name} thiếu cột bắt buộc: cần một trong {field_group}")
             count = sum(1 for _ in reader)
         if self.max_seed_rows > 0:
             return min(count, self.max_seed_rows)
@@ -784,28 +810,33 @@ def load_records(csv_path: str) -> list[dict[str, Any]]:
     with open(p, newline="", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
         cols = set(reader.fieldnames or [])
-        missing = REQUIRED_COLS - cols
-        if missing:
-            raise ValueError(f"{p.name} thiếu cột: {missing}")
+        for field_group in CORE_FIELDS:
+            if not any(fg in cols for fg in field_group):
+                raise ValueError(f"{p.name} thiếu cột: cần một trong {field_group}")
         for idx, row in enumerate(reader, start=1):
+            origin = _get_val(row, "ORIGIN", "Origin")
+            dest = _get_val(row, "DEST", "Dest")
+            origin_id = _get_val(row, "ORIGIN_AIRPORT_ID", "OriginAirportID") or airport_to_id(origin)
+            dest_id = _get_val(row, "DEST_AIRPORT_ID", "DestAirportID") or airport_to_id(dest)
             all_records.append({
                 "ROW_NUMBER": idx,
-                "DAY_OF_WEEK": _clean_raw_cell(row.get("DAY_OF_WEEK")),
-                "FL_DATE": _clean_raw_cell(row.get("FL_DATE")),
-                "OP_UNIQUE_CARRIER": _clean_raw_cell(row.get("OP_UNIQUE_CARRIER")),
-                "TAIL_NUM": _clean_raw_cell(row.get("TAIL_NUM")),
-                "OP_CARRIER_FL_NUM": _clean_raw_cell(row.get("OP_CARRIER_FL_NUM")),
-                "ORIGIN_AIRPORT_ID": _clean_raw_cell(row.get("ORIGIN_AIRPORT_ID")),
-                "ORIGIN_AIRPORT_SEQ_ID": _clean_raw_cell(row.get("ORIGIN_AIRPORT_SEQ_ID")),
-                "ORIGIN_CITY_MARKET_ID": _clean_raw_cell(row.get("ORIGIN_CITY_MARKET_ID")),
-                "ORIGIN": _clean_raw_cell(row.get("ORIGIN")),
-                "DEST_AIRPORT_ID": _clean_raw_cell(row.get("DEST_AIRPORT_ID")),
-                "DEST_AIRPORT_SEQ_ID": _clean_raw_cell(row.get("DEST_AIRPORT_SEQ_ID")),
-                "DEST_CITY_MARKET_ID": _clean_raw_cell(row.get("DEST_CITY_MARKET_ID")),
-                "DEST": _clean_raw_cell(row.get("DEST")),
-                "CRS_DEP_TIME": _clean_raw_cell(row.get("CRS_DEP_TIME")),
-                "CRS_ARR_TIME": _clean_raw_cell(row.get("CRS_ARR_TIME")),
-                "CRS_ELAPSED_TIME": _clean_raw_cell(row.get("CRS_ELAPSED_TIME")),
-                "DISTANCE": _clean_raw_cell(row.get("DISTANCE")),
+                "DAY_OF_WEEK": _get_val(row, "DAY_OF_WEEK", "DayOfWeek"),
+                "FL_DATE": _get_val(row, "FL_DATE", "FlightDate"),
+                "OP_UNIQUE_CARRIER": _get_val(row, "OP_UNIQUE_CARRIER", "Reporting_Airline"),
+                "CARRIER_NAME": _get_val(row, "CARRIER_NAME", "carrier_name"),
+                "TAIL_NUM": _get_val(row, "TAIL_NUM", "Tail_Number"),
+                "OP_CARRIER_FL_NUM": _get_val(row, "OP_CARRIER_FL_NUM", "Flight_Number_Reporting_Airline"),
+                "ORIGIN_AIRPORT_ID": origin_id,
+                "ORIGIN_AIRPORT_SEQ_ID": _get_val(row, "ORIGIN_AIRPORT_SEQ_ID", "OriginAirportSeqID") or f"{origin_id}01",
+                "ORIGIN_CITY_MARKET_ID": _get_val(row, "ORIGIN_CITY_MARKET_ID", "OriginCityMarketID") or f"{origin_id}99",
+                "ORIGIN": origin,
+                "DEST_AIRPORT_ID": dest_id,
+                "DEST_AIRPORT_SEQ_ID": _get_val(row, "DEST_AIRPORT_SEQ_ID", "DestAirportSeqID") or f"{dest_id}01",
+                "DEST_CITY_MARKET_ID": _get_val(row, "DEST_CITY_MARKET_ID", "DestCityMarketID") or f"{dest_id}99",
+                "DEST": dest,
+                "CRS_DEP_TIME": _get_val(row, "CRS_DEP_TIME", "CRSDepTime"),
+                "CRS_ARR_TIME": _get_val(row, "CRS_ARR_TIME", "CRSArrTime"),
+                "CRS_ELAPSED_TIME": _get_val(row, "CRS_ELAPSED_TIME", "CRSElapsedTime"),
+                "DISTANCE": _get_val(row, "DISTANCE", "Distance"),
             })
     return all_records
