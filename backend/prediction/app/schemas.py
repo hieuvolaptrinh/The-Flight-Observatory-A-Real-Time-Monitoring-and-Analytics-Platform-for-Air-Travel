@@ -20,7 +20,7 @@ class Results(BaseModel):
 class Job(BaseModel):
     id: str
     service: str
-    trigger: Literal["manual", "schedule"]
+    trigger: Literal["manual", "schedule", "startup"]
     status: Literal["running", "completed", "not_implemented", "failed"]
     started_at: datetime
     finished_at: datetime | None = None
