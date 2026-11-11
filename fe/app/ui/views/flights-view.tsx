@@ -11,6 +11,7 @@ import {
   statusBadgeClass,
   statusLabels,
 } from "../flight-types";
+import { CustomSelect } from "../components/custom-select";
 import { Icon } from "../components/icons";
 import { Metric } from "../components/metric-card";
 import { PcaScatterChart } from "../components/pca-scatter-chart";
@@ -63,6 +64,19 @@ interface FlightsViewProps {
   notify: (msg: string) => void;
 }
 
+const SORT_OPTIONS = [
+  { value: "time", label: "Sắp xếp: Giờ khởi hành" },
+  { value: "delay", label: "Sắp xếp: Độ trễ giảm dần" },
+  { value: "distance", label: "Sắp xếp: Cự ly giảm dần" },
+];
+
+const PAGE_SIZE_OPTIONS = [
+  { value: "10", label: "10 dòng / trang" },
+  { value: "12", label: "12 dòng / trang" },
+  { value: "25", label: "25 dòng / trang" },
+  { value: "50", label: "50 dòng / trang" },
+];
+
 export function FlightsView({
   apiMode,
   apiReady,
@@ -107,21 +121,13 @@ export function FlightsView({
   return (
     <>
       {apiMode !== "demo" && apiReady === false && (
-        <section
-          className="forecast-banner"
-          style={{ background: "#fcf0eb", borderColor: "#f2d6c9" }}
-        >
-          <span
-            className="banner-icon"
-            style={{ background: "#f7dfd4", color: "#c96a4a" }}
-          >
+        <section className="forecast-banner">
+          <span className="banner-icon">
             <Icon name="alert" size={24} />
           </span>
           <div>
-            <h2 style={{ color: "#7a3b26" }}>
-              Database hiện đang trống (chưa có dữ liệu chuyến bay).
-            </h2>
-            <p style={{ color: "#9c5840" }}>
+            <h2>Database hiện đang trống (chưa có dữ liệu chuyến bay).</h2>
+            <p>
               Nhấn nút &ldquo;Nạp batch mới (POST /run)&rdquo; trên thanh Header để Ingestion
               gọi Simulator và lưu dữ liệu vào PostgreSQL.
             </p>
@@ -330,25 +336,20 @@ export function FlightsView({
             </p>
           </div>
           <div className="table-tools">
-            <select
-              aria-label="Sắp xếp"
+            <CustomSelect
+              ariaLabel="Sắp xếp"
+              size="compact"
               value={sort}
-              onChange={e => setSort(e.target.value)}
-            >
-              <option value="time">Sắp xếp: Giờ khởi hành</option>
-              <option value="delay">Sắp xếp: Độ trễ giảm dần</option>
-              <option value="distance">Sắp xếp: Cự ly giảm dần</option>
-            </select>
-            <select
-              aria-label="Số dòng mỗi trang"
-              value={pageSize}
-              onChange={e => setPageSize(Number(e.target.value))}
-            >
-              <option value={10}>10 dòng / trang</option>
-              <option value={12}>12 dòng / trang</option>
-              <option value={25}>25 dòng / trang</option>
-              <option value={50}>50 dòng / trang</option>
-            </select>
+              onChange={setSort}
+              options={SORT_OPTIONS}
+            />
+            <CustomSelect
+              ariaLabel="Số dòng mỗi trang"
+              size="compact"
+              value={String(pageSize)}
+              onChange={val => setPageSize(Number(val))}
+              options={PAGE_SIZE_OPTIONS}
+            />
           </div>
         </div>
 

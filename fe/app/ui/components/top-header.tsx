@@ -25,7 +25,7 @@ export function TopHeader({
       <div className="top-brand-group">
         <Link href="/flights" className="brand-logo">
           <span className="brand-mark">
-            <Icon name="plane" size={18} />
+            <img src="/logo.png" alt="FlightLens Logo" className="brand-logo-img" />
           </span>
           <strong>
             flightlens<span className="brand-period">+</span>

@@ -17,7 +17,7 @@ export function Metric({
   color?: "teal" | "coral" | "blue" | "purple";
 }) {
   return (
-    <article className="metric">
+    <article className={`metric metric-${color}`}>
       <div className="metric-body">
         <span className="metric-label">{title}</span>
         <div className="metric-value">
