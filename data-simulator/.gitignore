@@ -139,3 +139,6 @@ dmypy.json
 
 # IDE - VSCode
 .vscode/*
+
+# Large CSV datasets (loaded at runtime, not tracked in Git)
+data/*.csv
