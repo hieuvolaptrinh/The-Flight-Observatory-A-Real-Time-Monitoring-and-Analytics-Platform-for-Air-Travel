@@ -192,20 +192,26 @@ def load_flight_rows(settings: Settings) -> list[dict[str, Any]]:
         for idx, r in enumerate(reader):
             if idx >= settings.max_sample_rows:
                 break
-            origin = str(r.get("ORIGIN") or "").strip().upper()
-            dest = str(r.get("DEST") or "").strip().upper()
+            origin = str(r.get("ORIGIN") or r.get("Origin") or "").strip().upper()
+            dest = str(r.get("DEST") or r.get("Dest") or "").strip().upper()
             if not origin or not dest:
                 continue
-            fl_date = _normalize_date(r.get("FL_DATE"))
-            carrier = str(r.get("OP_UNIQUE_CARRIER") or "").strip().upper()
-            fl_num = str(r.get("OP_CARRIER_FL_NUM") or idx).strip().split(".")[0]
-            raw_dep = str(r.get("CRS_DEP_TIME") or "0").strip().split(".")[0].replace(":", "")
+            fl_date = _normalize_date(r.get("FL_DATE") or r.get("FlightDate"))
+            carrier = str(r.get("OP_UNIQUE_CARRIER") or r.get("Reporting_Airline") or "").strip().upper()
+            fl_num = str(r.get("OP_CARRIER_FL_NUM") or r.get("Flight_Number_Reporting_Airline") or idx).strip().split(".")[0]
+            raw_dep = str(r.get("CRS_DEP_TIME") or r.get("CRSDepTime") or "0").strip().split(".")[0].replace(":", "")
             crs_dep_padded = f"{int(raw_dep):04d}" if raw_dep.isdigit() else "0000"
             dep_hour = min(23, max(0, int(crs_dep_padded[:2])))
-            distance = float(r.get("DISTANCE") or 0.0)
-            elapsed = float(r.get("CRS_ELAPSED_TIME") or 0.0)
+            distance = float(r.get("DISTANCE") or r.get("Distance") or 0.0)
+            elapsed = float(r.get("CRS_ELAPSED_TIME") or r.get("CRSElapsedTime") or 0.0)
             key = f"{fl_date}_{carrier}_{fl_num}_{origin}_{dest}_{crs_dep_padded}"
-            delay = _estimate_row_delay(origin, dest, dep_hour, distance, key)
+
+            dep_del = r.get("DepDel15") or r.get("DEP_DEL15")
+            if dep_del is not None and str(dep_del).strip() != "":
+                hval = int(hashlib.md5(key.encode("utf-8")).hexdigest()[:8], 16)
+                delay = float(15 + (hval % 55)) if str(dep_del).strip() in ("1", "1.0") else float(hval % 12)
+            else:
+                delay = _estimate_row_delay(origin, dest, dep_hour, distance, key)
             rows.append({
                 "origin": origin,
                 "dest": dest,
