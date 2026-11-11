@@ -168,7 +168,7 @@ export default function FlightRadarMap({
   const [isPaused, setIsPaused] = useState(false);
   const [speedMultiplier, setSpeedMultiplier] = useState<1 | 3 | 6>(1);
   const [colorMode, setColorMode] = useState<"status" | "cluster" | "flightaware">("status");
-  const [mapStyle, setMapStyle] = useState<MapStyleMode>("navy");
+  const [mapStyle, setMapStyle] = useState<MapStyleMode>("satellite");
   const [showAirportLabels, setShowAirportLabels] = useState(true);
   const [liveProgress, setLiveProgress] = useState<number>(0.5);
   const [liveCoords, setLiveCoords] = useState<{ lat: number; lon: number; bearing: number }>({
@@ -295,7 +295,7 @@ export default function FlightRadarMap({
       L.control.zoom({ position: "topright" }).addTo(map);
       L.control.scale({ position: "bottomleft", imperial: true, metric: true }).addTo(map);
 
-      const cfg = FREE_TILE_SOURCES.navy;
+      const cfg = FREE_TILE_SOURCES.satellite;
       baseTileLayerRef.current = L.tileLayer(cfg.baseUrl, {
         attribution: cfg.attribution,
         maxZoom: 16,
@@ -629,7 +629,7 @@ export default function FlightRadarMap({
             </span>
           </div>
           <p>
-            Dữ liệu trực tiếp từ bảng <code>ingested_flights</code> ({number(totalStoredInDb ?? totalMatchedCount)} chuyến lưu trong DB)
+            Giám sát vị trí và hành trình của {number(totalStoredInDb ?? totalMatchedCount)} chuyến bay theo thời gian thực
           </p>
         </div>
 
@@ -684,9 +684,9 @@ export default function FlightRadarMap({
             value={mapStyle}
             onChange={val => setMapStyle(val as MapStyleMode)}
             options={[
+              { value: "satellite", label: "Nền: Vệ tinh Esri" },
               { value: "navy", label: "Nền: FlightAware Navy" },
               { value: "osm-dark", label: "Nền: OSM Dark Radar" },
-              { value: "satellite", label: "Nền: Vệ tinh Esri" },
               { value: "osm", label: "Nền: Bản đồ Sáng" },
             ]}
           />
@@ -840,7 +840,7 @@ export default function FlightRadarMap({
           </>
         )}
         <span className="fa-footer-source">
-          Nguồn: PostgreSQL <code>ingested_flights</code> ({apiMode.toUpperCase()})
+          Trạng thái dữ liệu: Trực tiếp ({apiMode.toUpperCase()})
         </span>
       </div>
     </section>

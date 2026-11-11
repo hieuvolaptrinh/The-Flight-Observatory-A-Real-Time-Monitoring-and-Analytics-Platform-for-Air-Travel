@@ -95,7 +95,7 @@ export function ClusteringView({
           value={number(clusteringMeta?.total_airports ?? 0)}
           unit="sân bay"
           icon="globe"
-          note="Trích xuất đặc trưng từ bảng ingested_flights"
+          note="Tổng hợp từ toàn bộ dữ liệu chuyến bay"
           color="blue"
         />
         <Metric
@@ -103,7 +103,7 @@ export function ClusteringView({
           value={number(clusteringMeta?.total_routes ?? 0)}
           unit="tuyến"
           icon="plane"
-          note={`Nguồn: ${number(clusteringMeta?.source_flights_count ?? 0)} bản ghi chuyến bay`}
+          note={`Từ ${number(clusteringMeta?.source_flights_count ?? 0)} lượt bay đã ghi nhận`}
           color="coral"
         />
       </section>
@@ -112,9 +112,9 @@ export function ClusteringView({
         <section className="panel">
           <div className="panel-heading">
             <div>
-              <h2>Bản đồ Không gian Đặc trưng PCA 2 Chiều (2D Projection)</h2>
+              <h2>Bản đồ Tương quan &amp; Không gian Đặc trưng</h2>
               <p>
-                Mỗi điểm biểu diễn một {clusterEntityType === "airport" ? "sân bay" : "tuyến bay"} sau khi chuẩn hóa StandardScaler và giảm chiều bằng PCA
+                Trực quan hóa mức độ tương đồng và phân bố của từng {clusterEntityType === "airport" ? "sân bay" : "tuyến bay"}
               </p>
             </div>
             <div className="segmented">
@@ -140,7 +140,7 @@ export function ClusteringView({
               </button>
             </div>
           </div>
-          <div style={{ padding: "0 20px 20px" }}>
+          <div style={{ padding: "0 0 16px" }}>
             <PcaScatterChart
               items={clusterAssignments}
               selectedClusterId={selectedClusterId}
@@ -153,8 +153,8 @@ export function ClusteringView({
         <section className="panel">
           <div className="panel-heading">
             <div>
-              <h2>4 Tâm Cụm (Cluster Centroids) &amp; Giải nghĩa Nghiệp vụ</h2>
-              <p>Nhấn vào một cụm để lọc danh sách thực thể bên dưới</p>
+              <h2>4 Nhóm Đặc trưng Vận hành &amp; Ý nghĩa Nghiệp vụ</h2>
+              <p>Chọn từng nhóm để xem chi tiết danh sách bên dưới</p>
             </div>
             {selectedClusterId !== null && (
               <button

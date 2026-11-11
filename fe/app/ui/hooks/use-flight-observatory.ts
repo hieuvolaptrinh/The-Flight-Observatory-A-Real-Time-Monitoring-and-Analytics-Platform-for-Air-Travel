@@ -18,10 +18,10 @@ import {
 } from "../flight-types";
 import { US_AIRPORT_COORDS } from "../us-airports";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:8080/api";
-const DIRECT_INGESTION_URLS = ["http://127.0.0.1:8004", "http://localhost:8004"];
-const DIRECT_CLUSTERING_URLS = ["http://127.0.0.1:8002", "http://localhost:8002"];
-const DIRECT_PREDICTION_URLS = ["http://127.0.0.1:8003", "http://localhost:8003"];
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:2002/api";
+const DIRECT_INGESTION_URLS = ["http://127.0.0.1:2004", "http://localhost:2004"];
+const DIRECT_CLUSTERING_URLS = ["http://127.0.0.1:2006", "http://localhost:2006"];
+const DIRECT_PREDICTION_URLS = ["http://127.0.0.1:2003", "http://localhost:2003"];
 
 export function useFlightObservatory(view: ViewMode) {
   const isOverview = view === "overview";
@@ -335,7 +335,7 @@ export function useFlightObservatory(view: ViewMode) {
       }
     }
     setBusy(false);
-    notify("Không thể kết nối Clustering Service (port 8002 / Gateway 8080).");
+    notify("Không thể kết nối Clustering Service (port 2006 / Gateway 2002).");
   }, [fetchClusteringResults, notify]);
 
   // Trigger manual ML prediction pipeline run (POST /run)
@@ -639,9 +639,9 @@ export function useFlightObservatory(view: ViewMode) {
           : "Tổng quan Không lưu Hoa Kỳ";
 
   const pageSubtitle = isFlights
-    ? "Quan sát đồng bộ Bản đồ Radar thời gian thực (65%), Phân cụm K-Means & Biểu đồ tương quan (35%) cùng truy vấn SQL Server-side."
+    ? "Theo dõi vị trí trực quan trên bản đồ radar và thông tin chi tiết từng hành trình bay."
     : isClustering
-      ? "Phân tích chuyên sâu 4 cụm sân bay & tuyến bay Hoa Kỳ bằng thuật toán K-Means + StandardScaler + PCA(2D)."
+      ? "Phân nhóm và đánh giá đặc trưng vận hành của các sân bay và đường bay trọng điểm."
       : isForecast
         ? "Nhận diện sớm các chuyến bay có xác suất trễ cao bằng Machine Learning để chủ động điều phối."
         : isAnalytics

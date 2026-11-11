@@ -161,8 +161,8 @@ export function FlightsView({
           icon="plane"
           note={
             batchMeta?.window_start !== undefined
-              ? `Window [${batchMeta.window_start}..${batchMeta.window_end}] · Tổng DB: ${number(batchMeta.total_stored ?? 0)}`
-              : "Truy vấn trực tiếp từ bảng ingested_flights"
+              ? `Đang theo dõi ${number(batchMeta.total_stored ?? 0)} chuyến bay`
+              : "Dữ liệu vận hành cập nhật thời gian thực"
           }
         />
         <Metric
@@ -217,9 +217,9 @@ export function FlightsView({
           <section className="panel side-cluster-panel">
             <div className="panel-heading compact-heading">
               <div>
-                <h2>Phân cụm Sân bay K-Means &amp; PCA 2D</h2>
+                <h2>Phân nhóm Đặc trưng Sân bay</h2>
                 <p>
-                  Nhấn vào một cụm hoặc điểm PCA để lọc các sân bay/máy bay trên Bản đồ Radar
+                  Chọn nhóm để lọc nhanh các sân bay và máy bay trên bản đồ radar
                 </p>
               </div>
               {selectedClusterId !== null && (
@@ -283,7 +283,7 @@ export function FlightsView({
             <div className="panel-heading compact-heading">
               <div>
                 <h2>Độ trễ theo Hãng bay &amp; Trạng thái</h2>
-                <p>Tổng hợp trực tiếp bằng SQL GROUP BY theo bộ lọc hiện tại</p>
+                <p>Thống kê thời gian chậm trễ và phân bố trạng thái chuyến bay</p>
               </div>
             </div>
 
