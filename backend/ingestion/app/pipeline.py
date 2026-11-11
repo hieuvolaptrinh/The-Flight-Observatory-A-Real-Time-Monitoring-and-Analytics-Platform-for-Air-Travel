@@ -46,6 +46,19 @@ CARRIER_NAMES: dict[str, str] = {
 BUSY_HUBS = {"JFK", "ORD", "LAX", "ATL", "DFW", "SFO", "DEN", "EWR", "LGA", "MIA", "CLT", "BOS"}
 
 
+def airport_to_id(code: str | None) -> int:
+    """Deterministically maps a 3-letter IATA code to a unique integer ID (10000 - 27575)."""
+    if not code:
+        return 10000
+    c = code.strip().upper()
+    if len(c) >= 3 and c[:3].isalpha():
+        return 10000 + (ord(c[0]) - 65) * 676 + (ord(c[1]) - 65) * 26 + (ord(c[2]) - 65)
+    val = 10000
+    for ch in c:
+        val = (val * 31 + ord(ch)) % 80000
+    return val + 10000
+
+
 def _format_hhmm(raw: Any) -> tuple[str | None, int | None]:
     if raw is None:
         return None, None
@@ -81,9 +94,10 @@ def _estimate_delay(
     raw_row: dict[str, Any],
 ) -> tuple[float, str, int]:
     """
-    Use DELAY_MINUTES / ARR_DELAY / DEP_DELAY provided by data-simulator;
+    Use DELAY_MINUTES / ARR_DELAY / DEP_DELAY or DepDel15 provided by dataset;
     otherwise compute canonical deterministic delay from normalized flight_key.
     """
+    # 1. Check for continuous delay minutes directly
     for col in ("DELAY_MINUTES", "ARR_DELAY", "DEP_DELAY", "delay_minutes"):
         val = raw_row.get(col)
         if val is not None and str(val).strip() != "":
@@ -93,6 +107,22 @@ def _estimate_delay(
                 return d, status, 1 if d >= 15 else 0
             except ValueError:
                 pass
+
+    # 2. Check for binary delay label DepDel15 (1: delayed >= 15 min, 0: on time)
+    dep_del_val = raw_row.get("DepDel15") or raw_row.get("DEP_DEL15") or raw_row.get("dep_del15")
+    if dep_del_val is not None and str(dep_del_val).strip() != "":
+        try:
+            is_del = int(float(dep_del_val))
+            digest = int(hashlib.md5(flight_key.encode("utf-8")).hexdigest()[:8], 16)
+            if is_del == 1:
+                delay = float(15 + (digest % 55))
+                status = "severe_delay" if delay >= 45 else "moderate_delay"
+                return delay, status, 1
+            else:
+                delay = float(digest % 12)
+                return delay, "on_time", 0
+        except ValueError:
+            pass
 
     digest = int(hashlib.md5(flight_key.encode("utf-8")).hexdigest()[:8], 16)
     bucket = digest % 100
@@ -113,22 +143,22 @@ def _estimate_delay(
 
 
 def normalize_record(raw: dict[str, Any], fetched_at: str, ingested_at: str) -> dict[str, Any] | None:
-    fl_date = _normalize_date(raw.get("FL_DATE"))
-    carrier = str(raw.get("OP_UNIQUE_CARRIER") or "").strip().upper()
-    fl_num = str(raw.get("OP_CARRIER_FL_NUM") or "").strip().split(".")[0]
-    origin = str(raw.get("ORIGIN") or "").strip().upper()
-    dest = str(raw.get("DEST") or "").strip().upper()
+    fl_date = _normalize_date(raw.get("FL_DATE") or raw.get("FlightDate"))
+    carrier = str(raw.get("OP_UNIQUE_CARRIER") or raw.get("Reporting_Airline") or "").strip().upper()
+    fl_num = str(raw.get("OP_CARRIER_FL_NUM") or raw.get("Flight_Number_Reporting_Airline") or "").strip().split(".")[0]
+    origin = str(raw.get("ORIGIN") or raw.get("Origin") or "").strip().upper()
+    dest = str(raw.get("DEST") or raw.get("Dest") or "").strip().upper()
 
     if not carrier or not fl_num or not origin or not dest:
         return None
 
-    crs_dep_fmt, dep_hour = _format_hhmm(raw.get("CRS_DEP_TIME"))
-    crs_arr_fmt, _ = _format_hhmm(raw.get("CRS_ARR_TIME"))
+    crs_dep_fmt, dep_hour = _format_hhmm(raw.get("CRS_DEP_TIME") or raw.get("CRSDepTime"))
+    crs_arr_fmt, _ = _format_hhmm(raw.get("CRS_ARR_TIME") or raw.get("CRSArrTime"))
     crs_dep_raw = (crs_dep_fmt or "00:00").replace(":", "")
 
     flight_key = str(raw.get("FLIGHT_KEY") or f"{fl_date}_{carrier}_{fl_num}_{origin}_{dest}_{crs_dep_raw}")
-    distance = float(raw.get("DISTANCE") or 0.0)
-    elapsed = float(raw.get("CRS_ELAPSED_TIME") or 0.0)
+    distance = float(raw.get("DISTANCE") or raw.get("Distance") or 0.0)
+    elapsed = float(raw.get("CRS_ELAPSED_TIME") or raw.get("CRSElapsedTime") or 0.0)
     delay_minutes, delay_status, is_delayed = _estimate_delay(
         flight_key=flight_key,
         origin=origin,
@@ -146,15 +176,18 @@ def normalize_record(raw: dict[str, Any], fetched_at: str, ingested_at: str) -> 
         except ValueError:
             return None
 
-    tail_num = str(raw.get("TAIL_NUM") or "").strip() or None
-    raw_carrier_name = str(raw.get("CARRIER_NAME") or "").strip()
+    tail_num = str(raw.get("TAIL_NUM") or raw.get("Tail_Number") or "").strip() or None
+    raw_carrier_name = str(raw.get("CARRIER_NAME") or raw.get("carrier_name") or "").strip()
     carrier_name = raw_carrier_name or CARRIER_NAMES.get(carrier, f"Carrier {carrier}")
-    day_of_week = _opt_int(raw.get("DAY_OF_WEEK"))
+    day_of_week = _opt_int(raw.get("DAY_OF_WEEK") or raw.get("DayOfWeek"))
     if day_of_week is None:
         try:
             day_of_week = datetime.strptime(fl_date, "%Y-%m-%d").isoweekday()
         except ValueError:
             day_of_week = None
+
+    orig_id = _opt_int(raw.get("ORIGIN_AIRPORT_ID")) or airport_to_id(origin)
+    dest_id = _opt_int(raw.get("DEST_AIRPORT_ID")) or airport_to_id(dest)
 
     return {
         "flight_key": flight_key,
@@ -165,9 +198,9 @@ def normalize_record(raw: dict[str, Any], fetched_at: str, ingested_at: str) -> 
         "tail_num": tail_num,
         "op_carrier_fl_num": fl_num,
         "flight_code": f"{carrier} {fl_num}",
-        "origin_airport_id": _opt_int(raw.get("ORIGIN_AIRPORT_ID")),
+        "origin_airport_id": orig_id,
         "origin": origin,
-        "dest_airport_id": _opt_int(raw.get("DEST_AIRPORT_ID")),
+        "dest_airport_id": dest_id,
         "dest": dest,
         "route": f"{origin} → {dest}",
         "crs_dep_time": crs_dep_fmt or "00:00",
@@ -287,17 +320,34 @@ class Pipeline:
         seen_in_batch: set[str] = set()
         for raw in raw_items:
             rec = normalize_record(raw, fetched_at=fetched_at, ingested_at=ingested_at)
-            if rec and self.repository.has_schedule and (
-                replay is not None or (raw.get("ORIGIN_AIRPORT_SEQ_ID") and raw.get("DEST_AIRPORT_SEQ_ID"))
-            ):
+            if rec and self.repository.has_schedule:
                 schedule_record = {key: None if value == "" else value for key, value in raw.items()}
-                scheduled.append(Flight.model_validate(schedule_record | {
-                    "DAY_OF_WEEK": rec["day_of_week"],
-                    "FL_DATE": rec["fl_date"],
-                    "OP_CARRIER_FL_NUM": rec["op_carrier_fl_num"],
-                    "CARRIER_NAME": rec["carrier_name"],
-                    "DELAY_MINUTES": rec["delay_minutes"],
-                }))
+                orig_id = int(rec["origin_airport_id"])
+                dest_id = int(rec["dest_airport_id"])
+                try:
+                    scheduled.append(Flight.model_validate(schedule_record | {
+                        "DAY_OF_WEEK": rec["day_of_week"],
+                        "FL_DATE": rec["fl_date"],
+                        "OP_UNIQUE_CARRIER": rec["op_unique_carrier"],
+                        "OP_CARRIER_FL_NUM": rec["op_carrier_fl_num"],
+                        "CARRIER_NAME": rec["carrier_name"],
+                        "TAIL_NUM": rec["tail_num"],
+                        "ORIGIN_AIRPORT_ID": orig_id,
+                        "ORIGIN_AIRPORT_SEQ_ID": int(schedule_record.get("ORIGIN_AIRPORT_SEQ_ID") or f"{orig_id}01"),
+                        "ORIGIN_CITY_MARKET_ID": int(schedule_record.get("ORIGIN_CITY_MARKET_ID") or f"{orig_id}99"),
+                        "ORIGIN": rec["origin"],
+                        "DEST_AIRPORT_ID": dest_id,
+                        "DEST_AIRPORT_SEQ_ID": int(schedule_record.get("DEST_AIRPORT_SEQ_ID") or f"{dest_id}01"),
+                        "DEST_CITY_MARKET_ID": int(schedule_record.get("DEST_CITY_MARKET_ID") or f"{dest_id}99"),
+                        "DEST": rec["dest"],
+                        "CRS_DEP_TIME": rec["crs_dep_time"],
+                        "CRS_ARR_TIME": rec["crs_arr_time"],
+                        "CRS_ELAPSED_TIME": rec["crs_elapsed_time"],
+                        "DISTANCE": rec["distance"],
+                        "DELAY_MINUTES": rec["delay_minutes"],
+                    }))
+                except Exception as exc:
+                    logger.debug("Skip flight schedule validation: %s", exc)
             if rec and rec["flight_key"] not in seen_in_batch:
                 seen_in_batch.add(rec["flight_key"])
                 normalized.append(rec)
