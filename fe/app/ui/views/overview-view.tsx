@@ -90,7 +90,7 @@ export function OverviewView({
           <div
             className="donut"
             style={{
-              background: `conic-gradient(#05c48c 0 ${100 - rate}%, #f97316 ${100 - rate}% 100%)`,
+              background: `conic-gradient(#059669 0 ${100 - rate}%, #d97706 ${100 - rate}% 100%)`,
             }}
             role="img"
             aria-label={`${(100 - rate).toFixed(1)}% đúng giờ, ${rate.toFixed(1)}% trễ`}

@@ -10,6 +10,7 @@ import {
   number,
 } from "./flight-types";
 import { US_AIRPORT_COORDS, AirportCoord } from "./us-airports";
+import { CustomSelect } from "./components/custom-select";
 
 interface FlightRadarMapProps {
   flights: FlightItem[];
@@ -665,28 +666,30 @@ export default function FlightRadarMap({
             ))}
           </div>
 
-          <select
-            aria-label="Chế độ màu máy bay"
+          <CustomSelect
+            ariaLabel="Chế độ màu máy bay"
+            size="compact"
             value={colorMode}
-            onChange={e => setColorMode(e.target.value as "status" | "cluster" | "flightaware")}
-            className="fa-select"
-          >
-            <option value="status">Màu: Trạng thái Delay</option>
-            <option value="cluster">Màu: Cụm K-Means</option>
-            <option value="flightaware">Màu: Vàng FlightAware</option>
-          </select>
+            onChange={val => setColorMode(val as "status" | "cluster" | "flightaware")}
+            options={[
+              { value: "status", label: "Màu: Trạng thái Delay" },
+              { value: "cluster", label: "Màu: Cụm K-Means" },
+              { value: "flightaware", label: "Màu: Vàng FlightAware" },
+            ]}
+          />
 
-          <select
-            aria-label="Nền bản đồ"
+          <CustomSelect
+            ariaLabel="Nền bản đồ"
+            size="compact"
             value={mapStyle}
-            onChange={e => setMapStyle(e.target.value as MapStyleMode)}
-            className="fa-select"
-          >
-            <option value="navy">Nền: FlightAware Navy</option>
-            <option value="osm-dark">Nền: OSM Dark Radar</option>
-            <option value="satellite">Nền: Vệ tinh Esri</option>
-            <option value="osm">Nền: Bản đồ Sáng</option>
-          </select>
+            onChange={val => setMapStyle(val as MapStyleMode)}
+            options={[
+              { value: "navy", label: "Nền: FlightAware Navy" },
+              { value: "osm-dark", label: "Nền: OSM Dark Radar" },
+              { value: "satellite", label: "Nền: Vệ tinh Esri" },
+              { value: "osm", label: "Nền: Bản đồ Sáng" },
+            ]}
+          />
 
           <button
             type="button"
