@@ -72,7 +72,7 @@ export function ForecastView({
           <div className="panel-heading">
             <div>
               <h2>Delay dự kiến theo sân bay khởi hành</h2>
-              <p>Số phút trễ trung bình tại các sân bay lớn trong DB</p>
+              <p>Thời gian trễ trung bình dự kiến tại các sân bay trọng điểm</p>
             </div>
             <span className="chart-unit">ĐƠN VỊ: PHÚT</span>
           </div>
