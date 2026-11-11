@@ -84,7 +84,7 @@ export function OverviewView({
           <div className="panel-heading">
             <div>
               <h2>Tỷ trọng Trạng thái Chuyến bay</h2>
-              <p>Phân bổ đúng giờ và trễ chuyến từ Database</p>
+              <p>Tỷ lệ chuyến bay đúng giờ và chậm chuyến hiện tại</p>
             </div>
           </div>
           <div
@@ -155,7 +155,7 @@ export function OverviewView({
                   <div className="airport-code">{a.code}</div>
                   <div className="ranking-name">
                     <strong>{a.name}</strong>
-                    <span>{a.flights} chuyến trong DB</span>
+                    <span>{a.flights} chuyến bay</span>
                   </div>
                   <div className="ranking-track">
                     <div style={{ width: `${Math.min(100, (a.rate / 50) * 100)}%` }} />
@@ -170,10 +170,9 @@ export function OverviewView({
         </section>
 
         <section className="tomorrow-card">
-          <h2>Khám phá Bản đồ Radar Không lưu &amp; Phân cụm K-Means</h2>
+          <h2>Khám phá Bản đồ Radar &amp; Phân tích Chuyến bay</h2>
           <p>
-            Theo dõi trực tiếp hàng trăm máy bay di chuyển theo thời gian thực trên bản đồ
-            Hoa Kỳ kết hợp phân cụm sân bay K-Means + PCA 2D.
+            Theo dõi vị trí các chuyến bay theo thời gian thực kết hợp phân tích đặc trưng vận hành sân bay.
           </p>
           <div className="flight-illustration" aria-hidden="true">
             <span className="flight-code">RADAR MAP (65%)</span>

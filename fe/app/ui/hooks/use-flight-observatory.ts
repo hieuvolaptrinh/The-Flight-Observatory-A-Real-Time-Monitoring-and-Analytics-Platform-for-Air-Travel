@@ -16,9 +16,9 @@ import {
 } from "../flight-types";
 import { US_AIRPORT_COORDS } from "../us-airports";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:8080/api";
-const DIRECT_INGESTION_URLS = ["http://127.0.0.1:8004", "http://localhost:8004"];
-const DIRECT_CLUSTERING_URLS = ["http://127.0.0.1:8002", "http://localhost:8002"];
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:2002/api";
+const DIRECT_INGESTION_URLS = ["http://127.0.0.1:2004", "http://localhost:2004"];
+const DIRECT_CLUSTERING_URLS = ["http://127.0.0.1:2006", "http://localhost:2006"];
 
 export function useFlightObservatory(view: ViewMode) {
   const isOverview = view === "overview";
@@ -82,7 +82,7 @@ export function useFlightObservatory(view: ViewMode) {
     setCurrentPage(1);
   }, [airport, destAirport, carrier, flightStatus, debouncedSearch, sort, pageSize]);
 
-  // Fetch K-Means Clustering results từ Gateway (8080) hoặc Clustering Service (8002)
+  // Fetch K-Means Clustering results từ Gateway (2002) hoặc Clustering Service (2006)
   const fetchClusteringResults = useCallback(
     async (entityType: "airport" | "route" = clusterEntityType) => {
       const urls = [
@@ -257,7 +257,7 @@ export function useFlightObservatory(view: ViewMode) {
       }
     }
     setBusy(false);
-    notify("Không thể kết nối Clustering Service (port 8002 / Gateway 8080).");
+    notify("Không thể kết nối Clustering Service (port 2006 / Gateway 2002).");
   }, [fetchClusteringResults, notify]);
 
   useEffect(() => {
@@ -522,12 +522,12 @@ export function useFlightObservatory(view: ViewMode) {
         : "Tổng quan Không lưu Hoa Kỳ";
 
   const pageSubtitle = isFlights
-    ? "Quan sát đồng bộ Bản đồ Radar thời gian thực (65%), Phân cụm K-Means & Biểu đồ tương quan (35%) cùng truy vấn SQL Server-side."
+    ? "Theo dõi vị trí trực quan trên bản đồ radar và thông tin chi tiết từng hành trình bay."
     : isClustering
-      ? "Phân tích chuyên sâu 4 cụm sân bay & tuyến bay Hoa Kỳ bằng thuật toán K-Means + StandardScaler + PCA(2D)."
+      ? "Phân nhóm và đánh giá đặc trưng vận hành của các sân bay và đường bay trọng điểm."
       : isForecast
-        ? "Nhận diện sớm các chuyến bay có xác suất trễ cao để chủ động điều phối lịch trình."
-        : "Tổng hợp trực tiếp lưu lượng, tỷ lệ chậm chuyến và điểm nóng sân bay từ PostgreSQL.";
+        ? "Nhận diện sớm nguy cơ chậm chuyến để hỗ trợ lập kế hoạch và điều phối chủ động."
+        : "Theo dõi lưu lượng chuyến bay, tỷ lệ chậm trễ và các điểm nóng không lưu theo thời gian thực.";
 
   return {
     isOverview,
