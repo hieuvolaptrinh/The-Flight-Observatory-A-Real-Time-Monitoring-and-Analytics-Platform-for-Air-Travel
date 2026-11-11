@@ -1,6 +1,6 @@
-// Định nghĩa toàn bộ kiểu dữ liệu Chuyến bay (`ingested_flights`), Metadata Server-side SQL và Phân cụm K-Means (`cluster_centroids`, `cluster_assignments`)
+// Type definitions for flight items (ingested_flights), server-side SQL metadata, and clustering/prediction schemas
 
-export type ViewMode = "overview" | "flights" | "clustering" | "forecast";
+export type ViewMode = "overview" | "flights" | "clustering" | "forecast" | "analytics";
 
 export type IconName =
   | "plane"
@@ -37,6 +37,8 @@ export interface FlightItem {
   delay_minutes: number;
   delay_status: "on_time" | "moderate_delay" | "severe_delay";
   is_delayed: number;
+  day_of_week?: number;
+  dep_hour?: number;
   ingested_at: string;
 }
 
@@ -157,11 +159,44 @@ export interface PredictionItem {
   probability: number;
 }
 
+export interface RawFlightItem {
+  RAW_ID: number;
+  ROW_NUMBER: number;
+  DAY_OF_WEEK: string;
+  FL_DATE: string;
+  OP_UNIQUE_CARRIER: string;
+  CARRIER_NAME?: string | null;
+  TAIL_NUM?: string | null;
+  OP_CARRIER_FL_NUM: string;
+  ORIGIN_AIRPORT_ID: string;
+  ORIGIN_AIRPORT_SEQ_ID: string;
+  ORIGIN_CITY_MARKET_ID: string;
+  ORIGIN: string;
+  DEST_AIRPORT_ID: string;
+  DEST_AIRPORT_SEQ_ID: string;
+  DEST_CITY_MARKET_ID: string;
+  DEST: string;
+  CRS_DEP_TIME: string;
+  CRS_ARR_TIME: string;
+  CRS_ELAPSED_TIME: string;
+  DISTANCE: string;
+}
+
+export interface RawFlightsResponse {
+  fetched_at: string;
+  window_start: number;
+  window_end: number;
+  window_size: number;
+  slide_step: number;
+  total: number;
+  data: RawFlightItem[];
+}
+
 export const CLUSTER_COLORS: Record<number, string> = {
-  0: "#ef4444", // Đỏ san hô - Mega-Hub áp lực trễ cao
-  1: "#f59e0b", // Cam hổ phách - Đường dài xuyên lục địa
-  2: "#3b82f6", // Xanh dương - Tuyến khu vực tầm trung
-  3: "#10b981", // Xanh ngọc lục bảo - Khai thác ổn định, đúng giờ cao
+  0: "#ef4444", // Coral Red - Mega-Hub high delay pressure
+  1: "#f59e0b", // Amber Orange - Transcontinental long-haul
+  2: "#3b82f6", // Sky Blue - Regional medium-haul routes
+  3: "#10b981", // Emerald Green - Stable operations, high on-time rate
 };
 
 export const statusLabels: Record<FlightItem["delay_status"], string> = {

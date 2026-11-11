@@ -9,6 +9,8 @@ import {
   ClusteringMeta,
   FlightItem,
   PredictionItem,
+  RawFlightItem,
+  RawFlightsResponse,
   ServerFlightMeta,
   ViewMode,
   riskOf,
@@ -19,12 +21,14 @@ import { US_AIRPORT_COORDS } from "../us-airports";
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:8080/api";
 const DIRECT_INGESTION_URLS = ["http://127.0.0.1:8004", "http://localhost:8004"];
 const DIRECT_CLUSTERING_URLS = ["http://127.0.0.1:8002", "http://localhost:8002"];
+const DIRECT_PREDICTION_URLS = ["http://127.0.0.1:8003", "http://localhost:8003"];
 
 export function useFlightObservatory(view: ViewMode) {
   const isOverview = view === "overview";
   const isFlights = view === "flights";
   const isClustering = view === "clustering";
   const isForecast = view === "forecast";
+  const isAnalytics = view === "analytics";
 
   const [airport, setAirport] = useState("all");
   const [destAirport, setDestAirport] = useState("all");
@@ -42,7 +46,7 @@ export function useFlightObservatory(view: ViewMode) {
   const [toast, setToast] = useState("");
   const [busy, setBusy] = useState(false);
 
-  // State dữ liệu Chuyến bay từ PostgreSQL (Service Ingestion)
+  // Live flight data state from PostgreSQL (Ingestion Service)
   const [liveFlights, setLiveFlights] = useState<FlightItem[] | null>(null);
   const [radarFlights, setRadarFlights] = useState<FlightItem[] | null>(null);
   const [selectedFlightKey, setSelectedFlightKey] = useState<string | null>(null);
@@ -59,12 +63,62 @@ export function useFlightObservatory(view: ViewMode) {
     duplicate_count?: number;
   } | null>(null);
 
-  // State dữ liệu Phân cụm K-Means từ PostgreSQL (Service Clustering)
+  // K-Means clustering state from PostgreSQL (Clustering Service)
   const [clusterEntityType, setClusterEntityType] = useState<"airport" | "route">("airport");
   const [selectedClusterId, setSelectedClusterId] = useState<number | null>(null);
   const [clusteringMeta, setClusteringMeta] = useState<ClusteringMeta | null>(null);
   const [clusterAssignments, setClusterAssignments] = useState<ClusterAssignment[]>([]);
   const [clusteringReady, setClusteringReady] = useState<boolean>(false);
+
+  // Machine Learning delay prediction state (Prediction Service - STT 12 & 13)
+  const [mlPredictions, setMlPredictions] = useState<PredictionItem[] | null>(null);
+  const [predictionMeta, setPredictionMeta] = useState<Record<string, any> | null>(null);
+
+  // Raw Data Lakehouse state (Bronze Layer - analytics.raw_flights via simulator API)
+  const [dataLayer, setDataLayer] = useState<"cleaned" | "raw">("cleaned");
+  const [rawFlights, setRawFlights] = useState<RawFlightItem[]>([]);
+  const [rawLoading, setRawLoading] = useState(false);
+  const [rawCursor, setRawCursor] = useState(0);
+  const [rawTotal, setRawTotal] = useState(539719);
+  const rawPageSize = 12;
+
+  const fetchRawFlights = useCallback(async (cursor: number) => {
+    setRawLoading(true);
+    try {
+      const candidates = [
+        `${API_BASE}/simulator/flights?cursor=${cursor}&window_size=${rawPageSize}`,
+        `http://127.0.0.1:2003/flights?cursor=${cursor}&window_size=${rawPageSize}`,
+        `http://localhost:2003/flights?cursor=${cursor}&window_size=${rawPageSize}`,
+      ];
+      let res: Response | null = null;
+      for (const url of candidates) {
+        try {
+          const r = await fetch(url);
+          if (r.ok) {
+            res = r;
+            break;
+          }
+        } catch {
+          // Fall through to next candidate URL
+        }
+      }
+      if (res && res.ok) {
+        const payload: RawFlightsResponse = await res.json();
+        setRawFlights(payload.data || []);
+        if (payload.total) setRawTotal(payload.total);
+      }
+    } catch (err) {
+      console.warn("Could not fetch raw flights:", err);
+    } finally {
+      setRawLoading(false);
+    }
+  }, [rawPageSize]);
+
+  useEffect(() => {
+    if (dataLayer === "raw") {
+      fetchRawFlights(rawCursor);
+    }
+  }, [dataLayer, rawCursor, fetchRawFlights]);
 
   const notify = useCallback((message: string) => {
     setToast(message);
@@ -82,7 +136,7 @@ export function useFlightObservatory(view: ViewMode) {
     setCurrentPage(1);
   }, [airport, destAirport, carrier, flightStatus, debouncedSearch, sort, pageSize]);
 
-  // Fetch K-Means Clustering results từ Gateway (8080) hoặc Clustering Service (8002)
+  // Fetch K-Means clustering results from Gateway or Clustering service
   const fetchClusteringResults = useCallback(
     async (entityType: "airport" | "route" = clusterEntityType) => {
       const urls = [
@@ -107,6 +161,30 @@ export function useFlightObservatory(view: ViewMode) {
     },
     [clusterEntityType]
   );
+
+  // Fetch ML delay predictions from Gateway (8080) or Prediction Service (8003)
+  const fetchPredictions = useCallback(async () => {
+    const urls = [
+      `${API_BASE}/prediction/predictions`,
+      `${API_BASE}/prediction/results`,
+      ...DIRECT_PREDICTION_URLS.map(u => `${u}/predictions`),
+    ];
+    for (const url of urls) {
+      try {
+        const res = await fetch(url, { cache: "no-store" });
+        if (!res.ok) continue;
+        const json = await res.json();
+        const items: PredictionItem[] = json?.output?.items || [];
+        if (items.length > 0) {
+          setMlPredictions(items);
+          setPredictionMeta(json?.output?.metadata || null);
+          return;
+        }
+      } catch {
+        // try next candidate
+      }
+    }
+  }, []);
 
   const fetchIngestionFlights = useCallback(
     async (silent = false, forceRediscover = false) => {
@@ -260,10 +338,35 @@ export function useFlightObservatory(view: ViewMode) {
     notify("Không thể kết nối Clustering Service (port 8002 / Gateway 8080).");
   }, [fetchClusteringResults, notify]);
 
+  // Trigger manual ML prediction pipeline run (POST /run)
+  const triggerPredictionRun = useCallback(async () => {
+    setBusy(true);
+    const runUrls = [
+      `${API_BASE}/prediction/run`,
+      ...DIRECT_PREDICTION_URLS.map(u => `${u}/run`),
+    ];
+    for (const url of runUrls) {
+      try {
+        const res = await fetch(url, { method: "POST" });
+        if (res.ok) {
+          await fetchPredictions();
+          setBusy(false);
+          notify("Đã hoàn tất tính toán dự báo delay bằng Machine Learning!");
+          return;
+        }
+      } catch {
+        // try next
+      }
+    }
+    setBusy(false);
+    notify("Không thể kết nối Prediction Service (port 8003 / Gateway 8080).");
+  }, [fetchPredictions, notify]);
+
   useEffect(() => {
     fetchIngestionFlights(true);
     fetchClusteringResults();
-  }, [fetchIngestionFlights, fetchClusteringResults]);
+    fetchPredictions();
+  }, [fetchIngestionFlights, fetchClusteringResults, fetchPredictions]);
 
   useEffect(() => {
     if (!isFlights || !autoPollEnabled) return;
@@ -273,7 +376,16 @@ export function useFlightObservatory(view: ViewMode) {
     return () => clearInterval(interval);
   }, [isFlights, autoPollEnabled, fetchIngestionFlights]);
 
-  // Bản đồ tra cứu nhanh mã sân bay -> thông tin cụm K-Means
+  // Periodic auto-polling for ML Delay Predictions (/forecast) every 15 seconds
+  useEffect(() => {
+    if (!isForecast || !autoPollEnabled) return;
+    const interval = setInterval(() => {
+      fetchPredictions();
+    }, 15000);
+    return () => clearInterval(interval);
+  }, [isForecast, autoPollEnabled, fetchPredictions]);
+
+  // Fast lookup map: airport code -> K-Means cluster info
   const airportClusterMap = useMemo<Record<string, ClusterAssignment>>(() => {
     const map: Record<string, ClusterAssignment> = {};
     for (const item of clusterAssignments) {
@@ -328,22 +440,25 @@ export function useFlightObservatory(view: ViewMode) {
     }));
   }, [dbSourceFlights]);
 
-  const predictions = useMemo<PredictionItem[]>(
-    () =>
-      dbSourceFlights.slice(0, 50).map(f => {
-        const prob = Math.min(96, Math.max(8, Math.round(18 + f.delay_minutes * 1.35)));
-        return {
-          flight: f.flight_code,
-          carrier: f.op_unique_carrier,
-          origin: f.origin,
-          destination: f.dest,
-          time: f.crs_dep_time,
-          delay: Math.round(f.delay_minutes),
-          probability: prob,
-        };
-      }),
-    [dbSourceFlights]
-  );
+  const predictions = useMemo<PredictionItem[]>(() => {
+    // Prefer real ML predictions from Prediction Service (STT 12 & STT 13)
+    if (mlPredictions && mlPredictions.length > 0) {
+      return mlPredictions;
+    }
+    // Fallback: estimate from live database flights if prediction service is offline
+    return dbSourceFlights.slice(0, 50).map(f => {
+      const prob = Math.min(96, Math.max(8, Math.round(18 + f.delay_minutes * 1.35)));
+      return {
+        flight: f.flight_code,
+        carrier: f.op_unique_carrier,
+        origin: f.origin,
+        destination: f.dest,
+        time: f.crs_dep_time,
+        delay: Math.round(f.delay_minutes),
+        probability: prob,
+      };
+    });
+  }, [mlPredictions, dbSourceFlights]);
 
   const selection = airports.filter(a => airport === "all" || a.code === airport);
   const foundCarrier = carriers.find(c => c.code === carrier);
@@ -519,21 +634,26 @@ export function useFlightObservatory(view: ViewMode) {
       ? "Phân cụm K-Means & Không gian PCA 2D"
       : isForecast
         ? "Dự báo Rủi ro Trễ Chuyến bay"
-        : "Tổng quan Không lưu Hoa Kỳ";
+        : isAnalytics
+          ? "Phân tích Thống kê Chuỗi thời gian & Tương quan"
+          : "Tổng quan Không lưu Hoa Kỳ";
 
   const pageSubtitle = isFlights
     ? "Quan sát đồng bộ Bản đồ Radar thời gian thực (65%), Phân cụm K-Means & Biểu đồ tương quan (35%) cùng truy vấn SQL Server-side."
     : isClustering
       ? "Phân tích chuyên sâu 4 cụm sân bay & tuyến bay Hoa Kỳ bằng thuật toán K-Means + StandardScaler + PCA(2D)."
       : isForecast
-        ? "Nhận diện sớm các chuyến bay có xác suất trễ cao để chủ động điều phối lịch trình."
-        : "Tổng hợp trực tiếp lưu lượng, tỷ lệ chậm chuyến và điểm nóng sân bay từ PostgreSQL.";
+        ? "Nhận diện sớm các chuyến bay có xác suất trễ cao bằng Machine Learning để chủ động điều phối."
+        : isAnalytics
+          ? "Biểu đồ chuỗi thời gian Ngày/Tuần/Tháng, phân bố thời lượng bay, xu hướng Moving Average 7 ngày và tương quan Pearson."
+          : "Tổng hợp trực tiếp lưu lượng, tỷ lệ chậm chuyến và điểm nóng sân bay từ PostgreSQL.";
 
   return {
     isOverview,
     isFlights,
     isClustering,
     isForecast,
+    isAnalytics,
     pageTitle,
     pageSubtitle,
 
@@ -585,6 +705,10 @@ export function useFlightObservatory(view: ViewMode) {
     airportClusterMap,
     centroids,
 
+    // Prediction ML state
+    predictionMeta,
+    mlPredictions,
+
     // Derived datasets
     airports,
     carriers,
@@ -616,11 +740,24 @@ export function useFlightObservatory(view: ViewMode) {
     statusCounts,
     carrierDelayBars,
 
+    // Raw Data Lakehouse state
+    dataLayer,
+    setDataLayer,
+    rawFlights,
+    rawLoading,
+    rawCursor,
+    setRawCursor,
+    rawTotal,
+    rawPageSize,
+    fetchRawFlights,
+
     // Actions
     fetchIngestionFlights,
     fetchClusteringResults,
+    fetchPredictions,
     triggerIngestionRun,
     triggerClusteringRun,
+    triggerPredictionRun,
     refresh,
     resetFilters,
     exportCsv,

@@ -7,6 +7,7 @@ export function BottomNavDock({ view }: { view: ViewMode }) {
   const isFlights = view === "flights";
   const isClustering = view === "clustering";
   const isForecast = view === "forecast";
+  const isAnalytics = view === "analytics";
 
   return (
     <nav className="bottom-nav-dock" aria-label="Điều hướng chính">
@@ -27,6 +28,15 @@ export function BottomNavDock({ view }: { view: ViewMode }) {
         <Icon name="plane" size={18} />
         <span>Radar &amp; Chuyến bay</span>
         <small className="dock-badge live">LIVE</small>
+      </Link>
+
+      <Link
+        href="/analytics"
+        aria-current={isAnalytics ? "page" : undefined}
+        className={`dock-item ${isAnalytics ? "active" : ""}`}
+      >
+        <Icon name="chart" size={18} />
+        <span>Phân tích</span>
       </Link>
 
       <Link

@@ -10,6 +10,7 @@ import { FlightsView } from "./views/flights-view";
 import { ClusteringView } from "./views/clustering-view";
 import { ForecastView } from "./views/forecast-view";
 import { OverviewView } from "./views/overview-view";
+import { AnalyticsView } from "./views/analytics-view";
 
 export default function Dashboard({ view }: { view: ViewMode }) {
   const obs = useFlightObservatory(view);
@@ -89,6 +90,14 @@ export default function Dashboard({ view }: { view: ViewMode }) {
             totalPages={obs.totalPages}
             pageNumbers={obs.pageNumbers}
             setCurrentPage={obs.setCurrentPage}
+            dataLayer={obs.dataLayer}
+            setDataLayer={obs.setDataLayer}
+            rawFlights={obs.rawFlights}
+            rawLoading={obs.rawLoading}
+            rawCursor={obs.rawCursor}
+            setRawCursor={obs.setRawCursor}
+            rawTotal={obs.rawTotal}
+            rawPageSize={obs.rawPageSize}
             notify={obs.notify}
           />
         )}
@@ -116,6 +125,16 @@ export default function Dashboard({ view }: { view: ViewMode }) {
             selection={obs.selection}
             risk={obs.risk}
             setRisk={obs.setRisk}
+          />
+        )}
+
+        {obs.isAnalytics && (
+          <AnalyticsView
+            flights={obs.mapFlights && obs.mapFlights.length > 0 ? obs.mapFlights : obs.paginatedFlights}
+            total={obs.total}
+            rate={obs.rate}
+            avgDelay={obs.avg}
+            avgDistance={obs.flightsAvgDistance || 1252}
           />
         )}
 
