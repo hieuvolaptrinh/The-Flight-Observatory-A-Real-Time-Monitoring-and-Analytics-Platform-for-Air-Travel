@@ -2418,3 +2418,83 @@ td strong {
     display: none;
   }
 }
+
+/* =========================================================
+   DATA LAKEHOUSE LAYER TOGGLE (Raw DB vs Cleaned DB)
+   ========================================================= */
+.data-layer-toggle {
+  display: inline-flex;
+  align-items: center;
+  background: #f1f5f9;
+  padding: 3px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  gap: 3px;
+}
+
+.data-layer-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  border: none;
+  background: transparent;
+  color: var(--ink-secondary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.data-layer-btn:hover {
+  color: var(--ink);
+}
+
+.data-layer-btn.active {
+  background: #ffffff;
+  color: var(--emerald-dark);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.data-layer-btn.raw-active {
+  background: #ffffff;
+  color: #b45309;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.raw-db-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: #fffbeb;
+  border-bottom: 1px solid #fef3c7;
+  padding: 10px 20px;
+  font-size: 12px;
+  color: #92400e;
+}
+
+.raw-db-badge {
+  display: inline-flex;
+  align-items: center;
+  background: #fde68a;
+  color: #78350f;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 4px;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+}
+
+.raw-tag {
+  display: inline-block;
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 99px;
+  background: #fef3c7;
+  color: #b45309;
+  border: 1px solid #fde68a;
+}
+

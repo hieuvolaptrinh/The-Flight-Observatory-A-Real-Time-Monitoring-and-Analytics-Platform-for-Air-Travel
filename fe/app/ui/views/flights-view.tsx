@@ -7,6 +7,7 @@ import {
   ClusterCentroid,
   ClusteringMeta,
   FlightItem,
+  RawFlightItem,
   number,
   statusBadgeClass,
   statusLabels,
@@ -61,6 +62,14 @@ interface FlightsViewProps {
   totalPages: number;
   pageNumbers: (number | "...")[];
   setCurrentPage: (updater: number | ((prev: number) => number)) => void;
+  dataLayer: "cleaned" | "raw";
+  setDataLayer: (layer: "cleaned" | "raw") => void;
+  rawFlights: RawFlightItem[];
+  rawLoading: boolean;
+  rawCursor: number;
+  setRawCursor: (updater: number | ((prev: number) => number)) => void;
+  rawTotal: number;
+  rawPageSize: number;
   notify: (msg: string) => void;
 }
 
@@ -116,6 +125,14 @@ export function FlightsView({
   totalPages,
   pageNumbers,
   setCurrentPage,
+  dataLayer,
+  setDataLayer,
+  rawFlights,
+  rawLoading,
+  rawCursor,
+  setRawCursor,
+  rawTotal,
+  rawPageSize,
   notify,
 }: FlightsViewProps) {
   return (
@@ -135,7 +152,7 @@ export function FlightsView({
         </section>
       )}
 
-      {/* 4 KPI METRICS NHỎ GỌN */}
+      {/* 4 COMPACT KPI METRICS */}
       <section className="metrics" aria-label="Chỉ số chuyến bay">
         <Metric
           title="Tổng chuyến bay khớp lọc"
@@ -174,7 +191,7 @@ export function FlightsView({
         />
       </section>
 
-      {/* BỐ CỤC CHÍNH 65% (BẢN ĐỒ RADAR) - 35% (PHÂN CỤM K-MEANS & BIỂU ĐỒ TRỄ) */}
+      {/* MAIN WORKBENCH LAYOUT: RADAR MAP (65%) + SIDEBAR (35%) */}
       <div className="flights-workbench-grid">
         <div className="workbench-map-col">
           <FlightRadarMap
@@ -196,7 +213,7 @@ export function FlightsView({
         </div>
 
         <aside className="workbench-side-col" aria-label="Bảng phân tích đồng bộ bên cạnh bản đồ">
-          {/* SIDE PANEL 1: PHÂN CỤM SÂN BAY K-MEANS & PCA 2D */}
+          {/* SIDE PANEL 1: AIRPORT K-MEANS CLUSTERING & 2D PCA */}
           <section className="panel side-cluster-panel">
             <div className="panel-heading compact-heading">
               <div>
@@ -261,7 +278,7 @@ export function FlightsView({
             </div>
           </section>
 
-          {/* SIDE PANEL 2: TƯƠNG QUAN ĐỘ TRỄ THEO HÃNG & TRẠNG THÁI */}
+          {/* SIDE PANEL 2: CARRIER DELAY CORRELATION & STATUS */}
           <section className="panel side-delay-panel">
             <div className="panel-heading compact-heading">
               <div>
@@ -322,130 +339,230 @@ export function FlightsView({
         </aside>
       </div>
 
-      {/* BẢNG DANH SÁCH CHUYẾN BAY SERVER-SIDE SQL KÈM CỤM K-MEANS */}
+      {/* SERVER-SIDE SQL FLIGHTS TABLE WITH K-MEANS CLUSTERS & RAW DATA LAYER */}
       <section className="panel predictions-panel">
         <div className="panel-heading">
           <div>
             <h2>
-              Danh sách chi tiết chuyến bay{" "}
-              <span className="count-pill">{totalFilteredCount}</span>
+              {dataLayer === "raw" ? "Dữ liệu Thô từ Database (Bronze Layer) " : "Danh sách chi tiết chuyến bay "}
+              <span className="count-pill">
+                {dataLayer === "raw" ? `${rawTotal.toLocaleString()} dòng` : totalFilteredCount}
+              </span>
             </h2>
             <p>
-              Nhấn vào một dòng bất kỳ để định vị máy bay và xem đường bay trên Bản đồ Radar
-              phía trên
+              {dataLayer === "raw"
+                ? "Dữ liệu chuỗi nguyên bản chưa qua làm sạch từ bảng PostgreSQL analytics.raw_flights (539.719 dòng)"
+                : "Dữ liệu đã qua Ingestion Pipeline: Chuẩn hóa kiểu, khử trùng lặp và tính toán delay"}
             </p>
           </div>
           <div className="table-tools">
-            <CustomSelect
-              ariaLabel="Sắp xếp"
-              size="compact"
-              value={sort}
-              onChange={setSort}
-              options={SORT_OPTIONS}
-            />
-            <CustomSelect
-              ariaLabel="Số dòng mỗi trang"
-              size="compact"
-              value={String(pageSize)}
-              onChange={val => setPageSize(Number(val))}
-              options={PAGE_SIZE_OPTIONS}
-            />
+            <div className="data-layer-toggle" role="group" aria-label="Chọn tầng dữ liệu">
+              <button
+                type="button"
+                className={`data-layer-btn ${dataLayer === "cleaned" ? "active" : ""}`}
+                onClick={() => setDataLayer("cleaned")}
+                title="Dữ liệu đã chuẩn hóa trong bảng analytics.ingested_flights"
+              >
+                <Icon name="check" size={13} />
+                Đã chuẩn hóa (Cleaned DB)
+              </button>
+              <button
+                type="button"
+                className={`data-layer-btn ${dataLayer === "raw" ? "raw-active" : ""}`}
+                onClick={() => setDataLayer("raw")}
+                title="Dữ liệu thô nguyên bản trong bảng analytics.raw_flights (539.719 dòng)"
+              >
+                <Icon name="cluster" size={13} />
+                Dữ liệu thô (Raw DB · 540k)
+              </button>
+            </div>
+
+            {dataLayer === "cleaned" && (
+              <>
+                <CustomSelect
+                  ariaLabel="Sắp xếp"
+                  size="compact"
+                  value={sort}
+                  onChange={setSort}
+                  options={SORT_OPTIONS}
+                />
+                <CustomSelect
+                  ariaLabel="Số dòng mỗi trang"
+                  size="compact"
+                  value={String(pageSize)}
+                  onChange={val => setPageSize(Number(val))}
+                  options={PAGE_SIZE_OPTIONS}
+                />
+              </>
+            )}
           </div>
         </div>
 
+        {dataLayer === "raw" && (
+          <div className="raw-db-banner">
+            <span className="raw-db-badge">BRONZE LAYER · RAW DB</span>
+            <div>
+              <strong>Bảng dữ liệu thô nguyên bản: <code>analytics.raw_flights</code></strong>
+              <span>
+                {" "}— Truy vấn trực tiếp từ <strong>539.719 dòng</strong> lưu trữ định dạng TEXT nguyên gốc trước khi qua Ingestion Pipeline để làm sạch, khử trùng lặp và gán nhãn delay.
+              </span>
+            </div>
+          </div>
+        )}
+
         <div className="table-scroll">
-          <table>
-            <thead>
-              <tr>
-                <th>CHUYẾN BAY</th>
-                <th>TÀU BAY (TAIL)</th>
-                <th>NGÀY BAY</th>
-                <th>HÀNH TRÌNH</th>
-                <th>CỤM K-MEANS (SÂN BAY ĐI)</th>
-                <th>GIỜ ĐI / ĐẾN (CRS)</th>
-                <th>CỰ LY / THỜI GIAN</th>
-                <th>MỨC ĐỘ DELAY</th>
-                <th>TRẠNG THÁI</th>
-              </tr>
-            </thead>
-            <tbody>
-              {paginatedFlights.map(f => {
-                const badge = statusBadgeClass[f.delay_status];
-                const isRowSelected = selectedFlightKey === f.flight_key;
-                const oCluster = airportClusterMap[f.origin];
-                return (
-                  <tr
-                    key={f.flight_key}
-                    onClick={() =>
-                      setSelectedFlightKey(prev =>
-                        prev === f.flight_key ? null : f.flight_key
-                      )
-                    }
-                    className={isRowSelected ? "selected-row" : ""}
-                    style={{ cursor: "pointer" }}
-                    title="Nhấn để định vị máy bay này trên Bản đồ Radar"
-                  >
-                    <td>
-                      <span className={`airline-mark airline-${f.op_unique_carrier}`}>
-                        {f.op_unique_carrier}
-                      </span>
-                      <strong>{f.flight_code}</strong>
-                    </td>
-                    <td className="tabular">{f.tail_num || "—"}</td>
-                    <td className="tabular">{f.fl_date}</td>
-                    <td>
-                      <span className="route">
-                        <strong>{f.origin}</strong>
-                        <Icon name="arrow" size={14} />
-                        <strong>{f.dest}</strong>
-                      </span>
-                    </td>
-                    <td>
-                      {oCluster ? (
-                        <span
-                          className="cluster-pill-tag"
-                          style={{
-                            borderColor: CLUSTER_COLORS[oCluster.cluster_id] || "#38bdf8",
-                            color: CLUSTER_COLORS[oCluster.cluster_id] || "#38bdf8",
-                          }}
-                        >
-                          <i
-                            style={{
-                              background: CLUSTER_COLORS[oCluster.cluster_id] || "#38bdf8",
-                            }}
-                          />
-                          Cụm {oCluster.cluster_id} · {oCluster.short_label}
-                        </span>
-                      ) : (
-                        <span className="muted">—</span>
-                      )}
-                    </td>
-                    <td className="tabular">
-                      {f.crs_dep_time} <span className="muted">→</span> {f.crs_arr_time}
-                    </td>
-                    <td className="tabular">
-                      {number(Math.round(f.distance))}{" "}
-                      <span className="muted">dặm ({Math.round(f.crs_elapsed_time)}p)</span>
-                    </td>
-                    <td className="tabular">
-                      <strong className={f.delay_minutes >= 15 ? "coral-text" : ""}>
-                        +{f.delay_minutes}
-                      </strong>
-                      <span className="muted"> phút</span>
-                    </td>
-                    <td>
-                      <span className={`risk-badge ${badge}`}>
-                        <span />
-                        {statusLabels[f.delay_status]}
-                      </span>
+          {dataLayer === "raw" ? (
+            <table>
+              <thead>
+                <tr>
+                  <th>MÃ THÔ (RAW ID)</th>
+                  <th>NGÀY BAY</th>
+                  <th>HÃNG BAY & SỐ HIỆU</th>
+                  <th>TÀU BAY (TAIL)</th>
+                  <th>HÀNH TRÌNH THÔ (ORIGIN → DEST)</th>
+                  <th>GIỜ ĐI (CRS)</th>
+                  <th>GIỜ ĐẾN (CRS)</th>
+                  <th>CỰ LY / THỜI LƯỢNG</th>
+                  <th>TRẠNG THÁI</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rawLoading ? (
+                  <tr>
+                    <td colSpan={9} style={{ textAlign: "center", padding: "40px", color: "var(--muted)" }}>
+                      Đang truy vấn dữ liệu thô từ bảng <code>analytics.raw_flights</code>...
                     </td>
                   </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                ) : (
+                  rawFlights.map((r, i) => (
+                    <tr key={r.RAW_ID || `raw-${i}`}>
+                      <td>
+                        <strong>#{r.RAW_ID}</strong> <small className="muted">(Dòng {r.ROW_NUMBER})</small>
+                      </td>
+                      <td className="tabular">{r.FL_DATE}</td>
+                      <td>
+                        <span className={`airline-mark airline-${r.OP_UNIQUE_CARRIER || "AA"}`}>{r.OP_UNIQUE_CARRIER}</span>
+                        <strong>{r.OP_CARRIER_FL_NUM}</strong>
+                      </td>
+                      <td><code>{r.TAIL_NUM || "—"}</code></td>
+                      <td>
+                        <span className="route">
+                          <strong>{r.ORIGIN}</strong> <small className="muted">({r.ORIGIN_AIRPORT_ID})</small>
+                          <Icon name="arrow" size={14} />
+                          <strong>{r.DEST}</strong> <small className="muted">({r.DEST_AIRPORT_ID})</small>
+                        </span>
+                      </td>
+                      <td className="tabular">
+                        <code>{r.CRS_DEP_TIME}</code> <small className="muted">(text thô)</small>
+                      </td>
+                      <td className="tabular">
+                        <code>{r.CRS_ARR_TIME}</code>
+                      </td>
+                      <td className="tabular">
+                        {r.DISTANCE ? `${r.DISTANCE} dặm` : "—"} / {r.CRS_ELAPSED_TIME ? `${r.CRS_ELAPSED_TIME}p` : "—"}
+                      </td>
+                      <td>
+                        <span className="raw-tag">RAW · Chưa xử lý</span>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          ) : (
+            <table>
+              <thead>
+                <tr>
+                  <th>CHUYẾN BAY</th>
+                  <th>TÀU BAY (TAIL)</th>
+                  <th>NGÀY BAY</th>
+                  <th>HÀNH TRÌNH</th>
+                  <th>CỤM K-MEANS (SÂN BAY ĐI)</th>
+                  <th>GIỜ ĐI / ĐẾN (CRS)</th>
+                  <th>CỰ LY / THỜI GIAN</th>
+                  <th>MỨC ĐỘ DELAY</th>
+                  <th>TRẠNG THÁI</th>
+                </tr>
+              </thead>
+              <tbody>
+                {paginatedFlights.map(f => {
+                  const badge = statusBadgeClass[f.delay_status];
+                  const isRowSelected = selectedFlightKey === f.flight_key;
+                  const oCluster = airportClusterMap[f.origin];
+                  return (
+                    <tr
+                      key={f.flight_key}
+                      onClick={() =>
+                        setSelectedFlightKey(prev =>
+                          prev === f.flight_key ? null : f.flight_key
+                        )
+                      }
+                      className={isRowSelected ? "selected-row" : ""}
+                      style={{ cursor: "pointer" }}
+                      title="Nhấn để định vị máy bay này trên Bản đồ Radar"
+                    >
+                      <td>
+                        <span className={`airline-mark airline-${f.op_unique_carrier}`}>
+                          {f.op_unique_carrier}
+                        </span>
+                        <strong>{f.flight_code}</strong>
+                      </td>
+                      <td className="tabular">{f.tail_num || "—"}</td>
+                      <td className="tabular">{f.fl_date}</td>
+                      <td>
+                        <span className="route">
+                          <strong>{f.origin}</strong>
+                          <Icon name="arrow" size={14} />
+                          <strong>{f.dest}</strong>
+                        </span>
+                      </td>
+                      <td>
+                        {oCluster ? (
+                          <span
+                            className="cluster-pill-tag"
+                            style={{
+                              borderColor: CLUSTER_COLORS[oCluster.cluster_id] || "#38bdf8",
+                              color: CLUSTER_COLORS[oCluster.cluster_id] || "#38bdf8",
+                            }}
+                          >
+                            <i
+                              style={{
+                                background: CLUSTER_COLORS[oCluster.cluster_id] || "#38bdf8",
+                              }}
+                            />
+                            Cụm {oCluster.cluster_id} · {oCluster.short_label}
+                          </span>
+                        ) : (
+                          <span className="muted">—</span>
+                        )}
+                      </td>
+                      <td className="tabular">
+                        {f.crs_dep_time} <span className="muted">→</span> {f.crs_arr_time}
+                      </td>
+                      <td className="tabular">
+                        {number(Math.round(f.distance))}{" "}
+                        <span className="muted">dặm ({Math.round(f.crs_elapsed_time)}p)</span>
+                      </td>
+                      <td className="tabular">
+                        <strong className={f.delay_minutes >= 15 ? "coral-text" : ""}>
+                          +{f.delay_minutes}
+                        </strong>
+                        <span className="muted"> phút</span>
+                      </td>
+                      <td>
+                        <span className={`risk-badge ${badge}`}>
+                          <span />
+                          {statusLabels[f.delay_status]}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
 
-          {!paginatedFlights.length && (
+          {dataLayer === "cleaned" && !paginatedFlights.length && (
             <div className="empty-state">
               <Icon name="search" size={28} />
               <h3>Không có chuyến bay phù hợp</h3>
@@ -458,71 +575,110 @@ export function FlightsView({
           )}
         </div>
 
-        <div className="table-footer">
-          <div>
-            Hiển thị{" "}
-            <strong>
-              {totalFilteredCount ? startIndex + 1 : 0}–
-              {Math.min(startIndex + paginatedFlights.length, totalFilteredCount)}
-            </strong>{" "}
-            trên tổng số <strong>{totalFilteredCount}</strong> chuyến bay (Trang {safePage}/
-            {totalPages} · PostgreSQL Server-side Query)
+        {dataLayer === "raw" ? (
+          <div className="table-footer">
+            <div>
+              Hiển thị dòng thô{" "}
+              <strong>
+                {rawCursor + 1}–{Math.min(rawCursor + rawFlights.length, rawTotal)}
+              </strong>{" "}
+              trên tổng số <strong>{rawTotal.toLocaleString()}</strong> dòng thô trong database (<code>analytics.raw_flights</code> · Keyset Seek)
+            </div>
+
+            <div className="pagination-controls">
+              <button
+                type="button"
+                className="button secondary page-btn"
+                disabled={rawCursor <= 0 || rawLoading}
+                onClick={() => setRawCursor(0)}
+              >
+                « Về đầu (Dòng 1)
+              </button>
+              <button
+                type="button"
+                className="button secondary page-btn"
+                disabled={rawCursor <= 0 || rawLoading}
+                onClick={() => setRawCursor(Math.max(0, rawCursor - rawPageSize))}
+              >
+                ‹ Trước {rawPageSize} dòng
+              </button>
+              <button
+                type="button"
+                className="button secondary page-btn"
+                disabled={rawCursor + rawPageSize >= rawTotal || rawLoading}
+                onClick={() => setRawCursor(rawCursor + rawPageSize)}
+              >
+                Kế tiếp {rawPageSize} dòng ›
+              </button>
+            </div>
           </div>
+        ) : (
+          <div className="table-footer">
+            <div>
+              Hiển thị{" "}
+              <strong>
+                {totalFilteredCount ? startIndex + 1 : 0}–
+                {Math.min(startIndex + paginatedFlights.length, totalFilteredCount)}
+              </strong>{" "}
+              trên tổng số <strong>{totalFilteredCount}</strong> chuyến bay (Trang {safePage}/
+              {totalPages} · PostgreSQL Server-side Query)
+            </div>
 
-          <div className="pagination-controls">
-            <button
-              type="button"
-              className="button secondary page-btn"
-              disabled={safePage <= 1}
-              onClick={() => setCurrentPage(1)}
-            >
-              « Đầu
-            </button>
-            <button
-              type="button"
-              className="button secondary page-btn"
-              disabled={safePage <= 1}
-              onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
-            >
-              ‹ Trước
-            </button>
+            <div className="pagination-controls">
+              <button
+                type="button"
+                className="button secondary page-btn"
+                disabled={safePage <= 1}
+                onClick={() => setCurrentPage(1)}
+              >
+                « Đầu
+              </button>
+              <button
+                type="button"
+                className="button secondary page-btn"
+                disabled={safePage <= 1}
+                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+              >
+                ‹ Trước
+              </button>
 
-            {pageNumbers.map((p, idx) =>
-              p === "..." ? (
-                <span key={`ellipsis-${idx}`} className="page-ellipsis">
-                  …
-                </span>
-              ) : (
-                <button
-                  type="button"
-                  key={p}
-                  onClick={() => setCurrentPage(p)}
-                  aria-current={safePage === p ? "page" : undefined}
-                  className={`page-num-btn ${safePage === p ? "active" : ""}`}
-                >
-                  {p}
-                </button>
-              )
-            )}
+              {pageNumbers.map((p, idx) =>
+                p === "..." ? (
+                  <span key={`ellipsis-${idx}`} className="page-ellipsis">
+                    …
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    key={p}
+                    onClick={() => setCurrentPage(p)}
+                    aria-current={safePage === p ? "page" : undefined}
+                    className={`page-num-btn ${safePage === p ? "active" : ""}`}
+                  >
+                    {p}
+                  </button>
+                )
+              )}
 
-            <button
-              type="button"
-              className="button secondary page-btn"
-              disabled={safePage >= totalPages}
-              onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
-            >
-              Sau ›
-            </button>
-            <button
-              type="button"
-              className="button secondary page-btn"
-              disabled={safePage >= totalPages}
-              onClick={() => setCurrentPage(totalPages)}
-            >
-              Cuối »
-            </button>
+              <button
+                type="button"
+                className="button secondary page-btn"
+                disabled={safePage >= totalPages}
+                onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+              >
+                Sau ›
+              </button>
+              <button
+                type="button"
+                className="button secondary page-btn"
+                disabled={safePage >= totalPages}
+                onClick={() => setCurrentPage(totalPages)}
+              >
+                Cuối »
+              </button>
+            </div>
           </div>
-        </div>
+        )}
       </section>
     </>
   );
