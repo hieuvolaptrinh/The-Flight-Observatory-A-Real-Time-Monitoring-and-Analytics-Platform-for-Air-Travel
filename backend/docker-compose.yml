@@ -168,7 +168,7 @@ services:
       SIMULATOR_BASE_URL: "${SIMULATOR_BASE_URL:-http://data-simulator:8000}"
       INGESTION_BATCH_SIZE: "${INGESTION_BATCH_SIZE:-5}"
       FALLBACK_CSV_PATH: /data-source/flight_weather_2025_01.csv
-      TRIGGER_DOWNSTREAM_URLS: "${TRIGGER_DOWNSTREAM_URLS-http://clustering:8000/run}"
+      TRIGGER_DOWNSTREAM_URLS: "${TRIGGER_DOWNSTREAM_URLS:-}"
 
 volumes:
   clustering_models:

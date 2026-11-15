@@ -20,7 +20,15 @@ class JobRunner:
         self.service = service
         self.pipeline = pipeline
         self.latest: Job | None = None
+        self.next_scheduled_run: float | None = None
         self._lock = asyncio.Lock()
+
+    async def wait_for_next_run(self, interval_seconds: float) -> None:
+        self.next_scheduled_run = asyncio.get_running_loop().time() + interval_seconds
+        try:
+            await asyncio.sleep(interval_seconds)
+        finally:
+            self.next_scheduled_run = None
 
     def get_results(
         self,
@@ -87,7 +95,7 @@ class JobRunner:
 
     async def schedule(self, interval_seconds: float, run_on_startup: bool = True) -> None:
         if not run_on_startup:
-            await asyncio.sleep(interval_seconds)
+            await self.wait_for_next_run(interval_seconds)
         while True:
             try:
                 await self.run_once(trigger="schedule")
@@ -97,4 +105,4 @@ class JobRunner:
                 logger.warning("Pipeline is not implemented: service=%s", self.service)
             except Exception:
                 pass
-            await asyncio.sleep(interval_seconds)
+            await self.wait_for_next_run(interval_seconds)

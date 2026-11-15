@@ -250,7 +250,13 @@ p {
 .top-action-buttons {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
+}
+
+.ingestion-countdown {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 .button {
@@ -2558,3 +2564,144 @@ td strong {
   border: 1px solid #fde68a;
 }
 
+
+.analytics-page {
+  display: grid;
+  gap: 18px;
+}
+
+.analytics-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+.analytics-field {
+  display: grid;
+  gap: 5px;
+  color: var(--ink-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.analytics-controls > button {
+  min-height: 36px;
+  padding: 6px 12px;
+  border: 1px solid var(--slate-border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+}
+
+.analytics-controls > button:enabled {
+  cursor: pointer;
+}
+
+.analytics-controls > button:disabled {
+  opacity: 0.55;
+}
+
+.analytics-charts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 405px), 1fr));
+  gap: 16px;
+}
+
+.analytics-panel {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.analytics-panel h2 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.analytics-panel p,
+.analytics-status,
+.analytics-empty {
+  margin: 6px 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.analytics-plot {
+  display: block;
+  width: 100%;
+  margin-top: 12px;
+}
+
+.analytics-plot text {
+  fill: var(--ink-secondary);
+  font-size: 10px;
+}
+
+.analytics-gridline {
+  stroke: var(--border);
+  stroke-dasharray: 4 5;
+}
+
+.analytics-series-line {
+  fill: none;
+  stroke: var(--emerald);
+  stroke-width: 2;
+  stroke-linejoin: round;
+}
+
+.analytics-series-mark {
+  fill: var(--emerald);
+  fill-opacity: 0.75;
+}
+
+.analytics-matrix {
+  width: 100%;
+  margin-top: 16px;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.analytics-matrix th,
+.analytics-matrix td {
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+  text-align: center;
+}
+
+.analytics-matrix th[scope="row"] {
+  text-align: left;
+}
+
+.schedule-forecast {
+  margin-bottom: 16px;
+}
+
+.schedule-forecast-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px 30px;
+  margin: 12px 0;
+}
+
+.schedule-forecast-summary dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.schedule-forecast-summary dd {
+  margin: 3px 0;
+  color: var(--ink);
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.schedule-forecast .analytics-controls {
+  margin-top: 12px;
+}

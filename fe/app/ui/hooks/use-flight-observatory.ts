@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  API_BASE,
   AirportStat,
   CarrierStat,
   ClusterAssignment,
@@ -18,7 +19,6 @@ import {
 } from "../flight-types";
 import { US_AIRPORT_COORDS } from "../us-airports";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:2002/api";
 const DIRECT_INGESTION_URLS = ["http://127.0.0.1:2004", "http://localhost:2004"];
 const DIRECT_CLUSTERING_URLS = ["http://127.0.0.1:2006", "http://localhost:2006"];
 const DIRECT_PREDICTION_URLS = ["http://127.0.0.1:2003", "http://localhost:2003"];
@@ -42,7 +42,7 @@ export function useFlightObservatory(view: ViewMode) {
   const [sort, setSort] = useState("time");
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(12);
-  const [updated, setUpdated] = useState("Đang đồng bộ...");
+  const [updated, setUpdated] = useState<string | null>(null);
   const [toast, setToast] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -263,11 +263,7 @@ export function useFlightObservatory(view: ViewMode) {
             inserted_count: meta.last_batch?.inserted_count,
             duplicate_count: meta.last_batch?.duplicate_count,
           });
-          if (json.updated_at) {
-            setUpdated(
-              new Date(json.updated_at).toISOString().replace("T", " ").slice(0, 19) + " UTC"
-            );
-          }
+          setUpdated(json.updated_at ?? null);
           setBusy(false);
           if (!silent) {
             notify(

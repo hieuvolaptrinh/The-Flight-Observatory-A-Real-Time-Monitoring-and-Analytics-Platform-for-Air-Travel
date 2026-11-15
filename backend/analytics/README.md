@@ -32,3 +32,9 @@ GET /api/analytics/histogram?grain=day&date_from=2025-01-06&date_to=2025-01-07
 Đặt `GEMINI_API_KEY` trong `backend/analytics/.env`. `GEMINI_MODEL` có thể thay trong cùng file. `POST /forecast` gửi tối đa 28 ngày số chuyến đã tổng hợp, cần ít nhất 5 ngày có dữ liệu, và dùng lại kết quả đã lưu cho cùng ngày dự báo. Nhãn `high` nghĩa là số dự báo bằng hoặc vượt trung vị mẫu lịch sử. Dự báo là **ước lượng lưu lượng trong mẫu lịch giả lập**. Ngày dự báo là `FL_DATE` lớn nhất đã nạp cộng một ngày. Với CSV lịch bay hiện tại, tỷ lệ trễ thực tế trả `null`.
 
 Có thể [nạp CSV trước](../ingestion/db/README.md) để demo trend, seasonal hoặc forecast mà không phải đợi luồng 5 chuyến tích lũy đủ lịch sử.
+
+## Kiểm tra trên dashboard
+
+- Trang `/analytics` tải line, scatter, histogram, trend, seasonality và ma trận tương quan qua gateway. Bộ chọn ngày, tuần, tháng áp dụng cho line, scatter và histogram. Scatter và histogram dùng kỳ được chọn. Tham số `period_start` là ngày bắt đầu kỳ theo `grain`.
+- Với khoảng thời gian mặc định, API biểu đồ dùng snapshot do scheduler hoặc `POST /run` tạo. Trong DB dùng cho demo, tắt scheduler Analytics bằng `ANALYTICS_SCHEDULER_ENABLED=false`, chạy `POST /run` để tạo kết quả, rồi xóa các dòng trong `analytics.schedule_snapshots`. Tải lại `/analytics` để kiểm tra trạng thái thiếu kết quả. Gọi lại `POST /run` và tải lại trang để thấy biểu đồ phục hồi. API với cặp `date_from` và `date_to` chỉ định vẫn có thể tạo snapshot theo yêu cầu.
+- Trang `/forecast` đọc dự báo lưu lượng đã lưu. Nút **Tạo dự báo** gọi `POST /forecast` và cần cấu hình Gemini như trên. Để chuẩn bị model dự đoán delay cho demo, chạy `docker compose -f backend/docker-compose.yml run --rm --no-deps prediction python -m app.train` trước buổi demo. Lệnh lưu model vào volume `prediction_models`, cần giữ volume này khi dựng lại container.

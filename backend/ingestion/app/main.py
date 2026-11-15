@@ -53,11 +53,16 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
     @app.get("/health", tags=["operations"])
     async def health():
         runner: JobRunner = app.state.runner
+        deadline = runner.next_scheduled_run
         return {
             "status": "ok",
             "service": settings.service_name,
             "scheduler_enabled": settings.scheduler_enabled,
             "job_interval_seconds": settings.job_interval_seconds,
+            "next_run_in_seconds": (
+                max(0, deadline - asyncio.get_running_loop().time()) if deadline is not None else None
+            ),
+            "job_running": runner.latest is not None and runner.latest.status == "running",
             "simulator_base_url": settings.simulator_base_url,
             "storage": runner.pipeline.repository.storage_type,
         }

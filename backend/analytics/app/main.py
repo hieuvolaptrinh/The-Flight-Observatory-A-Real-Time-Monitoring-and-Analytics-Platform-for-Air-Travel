@@ -41,6 +41,7 @@ class Page(DateWindow):
 
 class Chart(Page):
     grain: Literal["day", "week", "month"] = "day"
+    period_start: date | None = None
 
 
 class Component(Page):
@@ -94,8 +95,10 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
 
     async def snapshot_chart(key, query):
         snapshot = await active.snapshot(*query.bounds())
-        rows = snapshot["payload"][key] if snapshot else []
-        return query.response(query.slice([row for row in rows if row["grain"] == query.grain]),
+        period = query.period_start.isoformat() if query.period_start else None
+        rows = [row for row in snapshot["payload"][key] if row["grain"] == query.grain
+                and (period is None or row["period_start"] == period)] if snapshot else []
+        return query.response(query.slice(rows),
                               grain=query.grain, summary=summary(snapshot))
 
     @app.get("/line", tags=["charts"])
@@ -108,8 +111,12 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
 
     @app.get("/scatter", tags=["charts"])
     async def scatter(query: Annotated[Chart, Query()]):
-        rows = await active.scatter(*query.bounds(), query.grain, query.limit + 1, query.offset)
-        return query.response(rows, grain=query.grain)
+        bounds = query.bounds()
+        snapshot = await active.snapshot(*bounds)
+        metadata = summary(snapshot)
+        rows = await active.scatter(snapshot["date_from"], snapshot["date_to"], query.grain,
+                                    query.limit + 1, query.offset, query.period_start) if metadata["ready"] else []
+        return query.response(rows, grain=query.grain, summary=metadata)
 
     async def component(query, field):
         snapshot = await active.snapshot(*query.bounds())
@@ -134,7 +141,10 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
 
     @app.get("/correlation", tags=["charts"])
     async def correlation(window: Annotated[DateWindow, Query()]):
-        return await active.correlations(*window.bounds())
+        snapshot = await active.snapshot(*window.bounds())
+        if not summary(snapshot)["ready"]:
+            return {"ready": False, "variables": [], "matrix": [], "samples": []}
+        return {"ready": True, **await active.correlations(snapshot["date_from"], snapshot["date_to"])}
 
     @app.get("/forecast", tags=["forecast"])
     async def saved_forecast():

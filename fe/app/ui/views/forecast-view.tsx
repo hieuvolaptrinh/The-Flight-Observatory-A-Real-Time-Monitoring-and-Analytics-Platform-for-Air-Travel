@@ -10,6 +10,7 @@ import {
 } from "../flight-types";
 import { Icon } from "../components/icons";
 import { Metric } from "../components/metric-card";
+import { ScheduleForecast } from "../components/schedule-forecast";
 
 interface ForecastViewProps {
   scoped: PredictionItem[];
@@ -67,6 +68,7 @@ export function ForecastView({
 
   return (
     <>
+      <ScheduleForecast />
       <section className="metrics" aria-label="Chỉ số dự báo">
         <Metric
           title="Chuyến bay được đánh giá"
