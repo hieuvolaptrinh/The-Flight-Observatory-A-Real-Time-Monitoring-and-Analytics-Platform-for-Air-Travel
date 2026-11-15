@@ -311,6 +311,17 @@ class Pipeline:
             payload = await asyncio.to_thread(self._fetch_from_fallback_csv)
             using_csv = True
 
+        counts = await self.ingest_payload(payload, replay)
+        if using_csv:
+            self._fallback_cursor = payload["window_start"] + payload["slide_step"]
+        if counts["inserted_count"] > 0:
+            asyncio.create_task(self._notify_downstream())
+        queried = await asyncio.to_thread(self.repository.query_flights, limit=200, offset=0)
+        return PipelineOutput(items=queried["items"], metadata=queried["metadata"])
+
+    async def ingest_payload(
+        self, payload: dict[str, Any], replay: ReplayPosition | None = None
+    ) -> dict[str, int]:
         fetched_at = payload.get("fetched_at") or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         ingested_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         raw_items = payload.get("data") or []
@@ -362,8 +373,6 @@ class Pipeline:
         }
 
         counts = await asyncio.to_thread(self.repository.insert_batch, normalized, batch_meta, tuple(scheduled), replay)
-        if using_csv:
-            self._fallback_cursor = payload["window_start"] + payload["slide_step"]
         logger.info(
             "Ingestion batch completed: source=%s window=[%s..%s] received=%d inserted=%d duplicates=%d total_stored=%d",
             batch_meta["source"],
@@ -375,11 +384,4 @@ class Pipeline:
             counts["total_stored"],
         )
 
-        if counts["inserted_count"] > 0:
-            asyncio.create_task(self._notify_downstream())
-
-        queried = await asyncio.to_thread(self.repository.query_flights, limit=200, offset=0)
-        return PipelineOutput(
-            items=queried["items"],
-            metadata=queried["metadata"],
-        )
+        return counts

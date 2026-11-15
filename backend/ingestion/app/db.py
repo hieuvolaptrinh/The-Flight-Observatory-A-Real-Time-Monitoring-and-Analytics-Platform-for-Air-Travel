@@ -112,7 +112,9 @@ SELECT
     AVG(delay_minutes) AS avg_delay_minutes,
     AVG(distance) AS avg_distance,
     AVG(crs_elapsed_time) AS avg_elapsed_time,
-    MAX(ingested_at) AS latest_ingested_at
+    MAX(ingested_at) AS latest_ingested_at,
+    MIN(fl_date) AS first_flight_date,
+    MAX(fl_date) AS last_flight_date
 FROM ingested_flights
 WHERE (%(origin)s::text IS NULL OR origin = %(origin)s)
   AND (%(dest)s::text IS NULL OR dest = %(dest)s)
@@ -138,7 +140,9 @@ SELECT
     AVG(delay_minutes) AS avg_delay_minutes,
     AVG(distance) AS avg_distance,
     AVG(crs_elapsed_time) AS avg_elapsed_time,
-    MAX(ingested_at) AS latest_ingested_at
+    MAX(ingested_at) AS latest_ingested_at,
+    MIN(fl_date) AS first_flight_date,
+    MAX(fl_date) AS last_flight_date
 FROM ingested_flights
 WHERE (:origin IS NULL OR origin = :origin)
   AND (:dest IS NULL OR dest = :dest)
@@ -536,6 +540,8 @@ class FlightRepository:
                 updated_at = datetime.now(timezone.utc)
 
         metadata = {
+            "first_flight_date": stats_row.get("first_flight_date"),
+            "last_flight_date": stats_row.get("last_flight_date"),
             "total_stored": total_stored,
             "filtered_count": filtered_count,
             "returned_count": len(items),

@@ -1,5 +1,7 @@
 // Type definitions for flight items (ingested_flights), server-side SQL metadata, and clustering/prediction schemas
 
+export const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:2002/api";
+
 export type ViewMode = "overview" | "flights" | "clustering" | "forecast" | "analytics";
 
 export type IconName =
@@ -43,6 +45,8 @@ export interface FlightItem {
 }
 
 export interface ServerFlightMeta {
+  first_flight_date?: string | null;
+  last_flight_date?: string | null;
   total_stored: number;
   filtered_count: number;
   returned_count: number;
@@ -221,3 +225,8 @@ export const riskLabels = {
 };
 
 export const number = (value: number) => new Intl.NumberFormat("vi-VN").format(value);
+
+export function flightDateRange(first: string, last: string) {
+  const format = (date: string) => date.split("-").reverse().join("/");
+  return first === last ? format(first) : format(first) + " – " + format(last);
+}

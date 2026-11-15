@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { Icon } from "./icons";
+import { IngestionCountdown } from "./ingestion-countdown";
 
 interface TopHeaderProps {
   pageTitle: string;
@@ -60,6 +61,7 @@ export function TopHeader({
             <Icon name="download" size={15} />
             Xuất CSV
           </button>
+          <IngestionCountdown direct={apiMode === "ingestion"} />
           <button
             type="button"
             className="button primary-action"

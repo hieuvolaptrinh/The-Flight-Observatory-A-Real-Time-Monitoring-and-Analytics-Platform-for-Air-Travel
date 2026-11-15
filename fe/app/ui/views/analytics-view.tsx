@@ -1,414 +1,285 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { Metric } from "../components/metric-card";
-import { Icon } from "../components/icons";
-import { FlightItem, number } from "../flight-types";
+import { useEffect, useState, type ReactNode } from "react";
+import { CustomSelect } from "../components/custom-select";
+import { API_BASE, flightDateRange, number } from "../flight-types";
 
-interface AnalyticsViewProps {
-  flights: FlightItem[];
-  total: number;
-  rate: number;
-  avgDelay: number;
-  avgDistance: number;
+type Grain = "day" | "week" | "month";
+type SeriesRow = { period_start: string; flight_count: number };
+type LineResponse = {
+  items: SeriesRow[];
+  summary: { ready: boolean; flight_count: number; updated_at?: string; date_from?: string; date_to?: string };
+};
+type HistogramRow = { bin_start_min: number; bin_end_min: number; flight_count: number };
+type ScatterRow = {
+  distance_miles: number | null;
+  scheduled_elapsed_min: number;
+};
+type ComponentResponse = {
+  grain: "week" | "month";
+  items: { period_start: string; trend?: number; seasonal?: number }[];
+};
+type Correlation = {
+  variables: string[];
+  matrix: (number | null)[][];
+  samples: number[][];
+};
+type AnalyticsData = {
+  line: LineResponse;
+  trend: ComponentResponse;
+  seasonality: ComponentResponse;
+  correlation: Correlation;
+  period: string | undefined;
+  histogram: HistogramRow[];
+  scatter: ScatterRow[];
+  moreScatter: boolean;
+};
+
+const grains: Record<Grain, string> = { day: "Ngày", week: "Tuần", month: "Tháng" };
+const variableLabels: Record<string, string> = {
+  distance_miles: "Khoảng cách",
+  scheduled_elapsed_min: "Thời lượng",
+  departure_hour: "Giờ khởi hành",
+};
+
+function timePoint(date: string, value: number) {
+  return { x: Date.parse(date) / 86_400_000, y: value, label: date };
 }
 
-export function AnalyticsView({
-  flights,
-  total,
-  rate,
-  avgDelay,
-  avgDistance,
-}: AnalyticsViewProps) {
-  const [grain, setGrain] = useState<"day" | "week" | "month">("day");
-  const [selectedWeekday, setSelectedWeekday] = useState<number | null>(null);
+async function read<T>(path: string, signal: AbortSignal): Promise<T> {
+  const response = await fetch(API_BASE + "/analytics/" + path, { cache: "no-store", signal });
+  if (!response.ok) throw new Error("Analytics HTTP " + response.status);
+  return response.json();
+}
 
-  // 1. Seasonality & Weekday Distribution Analysis
-  const weekdayStats = useMemo(() => {
-    const days = [
-      { name: "Thứ 2", isodow: 1, count: 0, delayed: 0 },
-      { name: "Thứ 3", isodow: 2, count: 0, delayed: 0 },
-      { name: "Thứ 4", isodow: 3, count: 0, delayed: 0 },
-      { name: "Thứ 5", isodow: 4, count: 0, delayed: 0 },
-      { name: "Thứ 6", isodow: 5, count: 0, delayed: 0 },
-      { name: "Thứ 7", isodow: 6, count: 0, delayed: 0 },
-      { name: "Chủ nhật", isodow: 7, count: 0, delayed: 0 },
-    ];
-    for (const f of flights) {
-      const idx = (f.day_of_week ? f.day_of_week - 1 : 0) % 7;
-      days[idx].count += 1;
-      if (f.is_delayed === 1 || f.delay_minutes >= 15) {
-        days[idx].delayed += 1;
-      }
-    }
-    // Natural aviation weekly variations (Friday & Sunday busy rush, Tuesday/Wednesday lighter)
-    const naturalWeekdayMultipliers = [1.14, 0.84, 0.91, 1.03, 1.28, 0.88, 1.16];
+async function load(grain: Grain, selected: string, signal: AbortSignal): Promise<AnalyticsData> {
+  const [line, trend, seasonality, correlation] = await Promise.all([
+    read<LineResponse>("line?limit=500&grain=" + grain, signal),
+    read<ComponentResponse>("trend?limit=500", signal),
+    read<ComponentResponse>("seasonality?limit=500", signal),
+    read<Correlation>("correlation", signal),
+  ]);
 
-    return days.map((d, i) => {
-      const naturalRate = Math.min(48, Math.max(14, rate * naturalWeekdayMultipliers[i]));
-      const finalRate = d.count > 0 ? (d.delayed / d.count) * 100 : naturalRate;
-      return {
-        ...d,
-        delayRate: finalRate,
-      };
-    });
-  }, [flights, rate]);
+  const periods = line.items.filter(row => row.flight_count > 0);
+  const period = periods.find(row => row.period_start === selected)?.period_start
+    ?? periods.at(-1)?.period_start;
+  if (!period || !line.summary.ready) {
+    return { line, trend, seasonality, correlation, period, histogram: [], scatter: [], moreScatter: false };
+  }
 
-  // 2. Flight Duration Histogram (30-minute intervals)
-  const histogramBins = useMemo(() => {
-    const bins = [
-      { label: "< 60m", min: 0, max: 60, count: 0 },
-      { label: "60-90m", min: 60, max: 90, count: 0 },
-      { label: "90-120m", min: 90, max: 120, count: 0 },
-      { label: "120-180m", min: 120, max: 180, count: 0 },
-      { label: "180-240m", min: 180, max: 240, count: 0 },
-      { label: "> 240m", min: 240, max: 9999, count: 0 },
-    ];
-    for (const f of flights) {
-      const elapsed = f.crs_elapsed_time || 0;
-      for (const b of bins) {
-        if (elapsed >= b.min && elapsed < b.max) {
-          b.count += 1;
-          break;
-        }
-      }
-    }
-    const maxCnt = Math.max(1, ...bins.map(b => b.count));
-    return bins.map(b => ({
-      ...b,
-      pct: (b.count / maxCnt) * 100,
-    }));
-  }, [flights]);
+  const query = new URLSearchParams({ grain, period_start: period });
+  const [histogram, scatter] = await Promise.all([
+    read<{ items: HistogramRow[] }>("histogram?limit=500&" + query, signal),
+    read<{ items: ScatterRow[]; has_more: boolean }>("scatter?limit=500&" + query, signal),
+  ]);
+  return { line, trend, seasonality, correlation, period, histogram: histogram.items,
+    scatter: scatter.items, moreScatter: scatter.has_more };
+}
 
-  // 3. Distance vs Duration Scatter & Pearson Correlation (r)
-  const { scatterPoints, pearsonR } = useMemo(() => {
-    const valid = flights.filter(f => f.distance > 0 && f.crs_elapsed_time > 0);
-    const sample = valid.slice(0, 120);
-
-    if (sample.length < 2) {
-      return { scatterPoints: [], pearsonR: 0.94 };
-    }
-
-    const maxDist = Math.max(2600, ...sample.map(f => f.distance));
-    const maxElapsed = Math.max(380, ...sample.map(f => f.crs_elapsed_time));
-
-    // Calculate Pearson correlation coefficient
-    const n = sample.length;
-    let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0, sumY2 = 0;
-    for (const f of sample) {
-      const x = f.distance;
-      const y = f.crs_elapsed_time;
-      sumX += x;
-      sumY += y;
-      sumXY += x * y;
-      sumX2 += x * x;
-      sumY2 += y * y;
-    }
-    const numerator = n * sumXY - sumX * sumY;
-    const denominator = Math.sqrt((n * sumX2 - sumX * sumX) * (n * sumY2 - sumY * sumY));
-    const r = denominator !== 0 ? numerator / denominator : 0.94;
-
-    const points = sample.map(f => ({
-      x: (f.distance / maxDist) * 100,
-      y: (f.crs_elapsed_time / maxElapsed) * 100,
-      flight: f.flight_code,
-      distance: f.distance,
-      elapsed: f.crs_elapsed_time,
-      isDelayed: f.is_delayed === 1 || f.delay_minutes >= 15,
-    }));
-
-    return { scatterPoints: points, pearsonR: Math.min(1.0, Math.max(-1.0, r)) };
-  }, [flights]);
-
-  // 4. Time-series trend mock matching selected grain
-  const timeSeries = useMemo(() => {
-    const count = grain === "month" ? 12 : grain === "week" ? 8 : 14;
-    const baseVal = Math.max(10, Math.round(total / (count * 2)));
-    return Array.from({ length: count }, (_, i) => {
-      const label = grain === "month" ? `T${i + 1}` : grain === "week" ? `W${i + 1}` : `${i + 1}/11`;
-      const wave = Math.sin((i / count) * Math.PI * 2) * 0.25;
-      const flCnt = Math.max(5, Math.round(baseVal * (1 + wave + ((i % 3) - 1) * 0.1)));
-      const delRate = Math.min(45, Math.max(8, rate + wave * 10 + ((i % 2) - 0.5) * 4));
-      return { label, count: flCnt, rate: delRate };
-    });
-  }, [grain, total, rate]);
-
+function Panel({ title, description, children }: { title: string; description: string; children: ReactNode }) {
   return (
-    <>
-      {/* 1. Header Metrics Row */}
-      <section className="metrics" aria-label="Chỉ số phân tích nâng cao">
-        <Metric
-          title="Tổng chuyến bay phân tích"
-          value={number(total)}
-          unit="chuyến"
-          icon="plane"
-          note="Tổng hợp từ toàn bộ chuỗi thời gian PostgreSQL"
-        />
-        <Metric
-          title="Hệ số tương quan Pearson (r)"
-          value={pearsonR.toFixed(3)}
-          unit=""
-          icon="spark"
-          note="Mối tương quan mạnh: Khoảng cách & Thời gian bay"
-          color="teal"
-        />
-        <Metric
-          title="Cự ly bay trung bình"
-          value={avgDistance > 0 ? avgDistance.toFixed(0) : "892"}
-          unit="dặm"
-          icon="globe"
-          note="Tương đương ~1.435 km trên mỗi chuyến"
-          color="blue"
-        />
-        <Metric
-          title="Tỷ lệ trễ trung bình"
-          value={rate.toFixed(1)}
-          unit="%"
-          icon="chart"
-          note="Biến thiên theo khung giờ và ngày trong tuần"
-          color="coral"
-        />
-      </section>
-
-      {/* 2. Top Charts Grid: Time Series & Seasonality */}
-      <div className="overview-charts">
-        {/* Line Chart & Moving Average */}
-        <section className="panel">
-          <div className="panel-heading">
-            <div>
-              <h2>Biến động Khai thác & Tỷ lệ trễ theo Chu kỳ</h2>
-              <p>Quan sát xu hướng lưu lượng chuyến bay và tỷ lệ chậm chuyến</p>
-            </div>
-            <div className="segmented">
-              <button
-                type="button"
-                className={grain === "day" ? "selected" : ""}
-                onClick={() => setGrain("day")}
-              >
-                Ngày
-              </button>
-              <button
-                type="button"
-                className={grain === "week" ? "selected" : ""}
-                onClick={() => setGrain("week")}
-              >
-                Tuần
-              </button>
-              <button
-                type="button"
-                className={grain === "month" ? "selected" : ""}
-                onClick={() => setGrain("month")}
-              >
-                Tháng
-              </button>
-            </div>
-          </div>
-
-          <div style={{ padding: "16px 8px 8px 8px" }}>
-            <svg viewBox="0 0 600 200" style={{ width: "100%", height: "200px" }}>
-              <defs>
-                <linearGradient id="analyticsGradient" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#05c48c" stopOpacity="0.25" />
-                  <stop offset="100%" stopColor="#05c48c" stopOpacity="0.0" />
-                </linearGradient>
-              </defs>
-              {/* Horizontal gridlines */}
-              {[0, 25, 50, 75, 100].map(val => (
-                <line
-                  key={val}
-                  x1="30"
-                  y1={170 - val * 1.4}
-                  x2="580"
-                  y2={170 - val * 1.4}
-                  stroke="#e2e8f0"
-                  strokeDasharray="4 4"
-                />
-              ))}
-
-              {/* Area & Line */}
-              {timeSeries.length > 1 && (
-                <>
-                  <polygon
-                    points={`30,170 ${timeSeries
-                      .map((t, idx) => `${30 + idx * (550 / (timeSeries.length - 1))},${170 - (t.rate / 50) * 140}`)
-                      .join(" ")} 580,170`}
-                    fill="url(#analyticsGradient)"
-                  />
-                  <polyline
-                    points={timeSeries
-                      .map((t, idx) => `${30 + idx * (550 / (timeSeries.length - 1))},${170 - (t.rate / 50) * 140}`)
-                      .join(" ")}
-                    fill="none"
-                    stroke="#05c48c"
-                    strokeWidth="3"
-                    strokeLinecap="round"
-                  />
-                  {timeSeries.map((t, idx) => {
-                    const cx = 30 + idx * (550 / (timeSeries.length - 1));
-                    const cy = 170 - (t.rate / 50) * 140;
-                    return (
-                      <g key={t.label}>
-                        <circle cx={cx} cy={cy} r="4" fill="#05c48c" stroke="#fff" strokeWidth="2" />
-                        <text x={cx} y="190" fontSize="11" textAnchor="middle" fill="#64748b">
-                          {t.label}
-                        </text>
-                      </g>
-                    );
-                  })}
-                </>
-              )}
-            </svg>
-          </div>
-          <div style={{ display: "flex", justifyContent: "space-between", padding: "0 16px 12px 16px", fontSize: "12px", color: "#64748b" }}>
-            <span>Đường màu xanh ngọc: Tỷ lệ trễ (%)</span>
-            <span>Khung chuỗi: {grain.toUpperCase()}</span>
-          </div>
-        </section>
-
-        {/* Seasonality: Weekday Delay Rhythm */}
-        <section className="panel">
-          <div className="panel-heading">
-            <div>
-              <h2>Tính Mùa vụ: Tỷ lệ trễ theo Thứ trong tuần</h2>
-              <p>Phân tích các ngày cao điểm tắc nghẽn trong tuần (Thứ 2 - CN)</p>
-            </div>
-            <Icon name="calendar" size={18} />
-          </div>
-
-          <div style={{ padding: "12px 16px", display: "flex", flexDirection: "column", gap: "10px" }}>
-            {weekdayStats.map(w => (
-              <div
-                key={w.isodow}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "12px",
-                  fontSize: "13px",
-                  cursor: "pointer",
-                }}
-                onClick={() => setSelectedWeekday(selectedWeekday === w.isodow ? null : w.isodow)}
-              >
-                <span style={{ width: "65px", fontWeight: 600, color: "#1e293b" }}>{w.name}</span>
-                <div style={{ flex: 1, height: "10px", background: "#f1f5f9", borderRadius: "999px", overflow: "hidden" }}>
-                  <div
-                    style={{
-                      width: `${Math.min(100, (w.delayRate / 40) * 100)}%`,
-                      height: "100%",
-                      background: w.delayRate >= 22 ? "#ef4444" : w.delayRate >= 16 ? "#f59e0b" : "#05c48c",
-                      borderRadius: "999px",
-                      transition: "width 0.3s ease",
-                    }}
-                  />
-                </div>
-                <strong style={{ width: "45px", textAlign: "right", color: w.delayRate >= 22 ? "#dc2626" : "#334155" }}>
-                  {w.delayRate.toFixed(1)}%
-                </strong>
-              </div>
-            ))}
-          </div>
-        </section>
-      </div>
-
-      {/* 3. Bottom Grid: Histogram & Scatter Plot */}
-      <div className="bottom-grid">
-        {/* Histogram */}
-        <section className="panel">
-          <div className="panel-heading">
-            <div>
-              <h2>Histogram: Phân bố Thời lượng Bay</h2>
-              <p>Số lượng chuyến bay theo các khoảng thời gian bay dự kiến (phút)</p>
-            </div>
-            <Icon name="clock" size={18} />
-          </div>
-
-          <div style={{ padding: "16px", display: "flex", alignItems: "flex-end", height: "200px", gap: "12px" }}>
-            {histogramBins.map(bin => (
-              <div
-                key={bin.label}
-                style={{
-                  flex: 1,
-                  display: "flex",
-                  flexDirection: "column",
-                  alignItems: "center",
-                  height: "100%",
-                  justifyContent: "flex-end",
-                  gap: "6px",
-                }}
-              >
-                <span style={{ fontSize: "11px", fontWeight: 600, color: "#475569" }}>{bin.count}</span>
-                <div
-                  style={{
-                    width: "100%",
-                    height: `${Math.max(8, bin.pct)}%`,
-                    background: "linear-gradient(180deg, #3b82f6 0%, #1d4ed8 100%)",
-                    borderRadius: "6px 6px 0 0",
-                    transition: "height 0.4s ease",
-                  }}
-                />
-                <span style={{ fontSize: "11px", color: "#64748b", textAlign: "center", marginTop: "4px" }}>
-                  {bin.label}
-                </span>
-              </div>
-            ))}
-          </div>
-        </section>
-
-        {/* Scatter Plot: Distance vs Elapsed Time */}
-        <section className="panel">
-          <div className="panel-heading">
-            <div>
-              <h2>Biểu đồ Phân tán: Khoảng cách &amp; Thời lượng</h2>
-              <p>Mỗi điểm là một chuyến bay; hệ số tương quan r = {pearsonR.toFixed(3)}</p>
-            </div>
-            <span className="legend">
-              <i style={{ background: "#ef4444" }} /> Trễ | <i style={{ background: "#05c48c" }} /> Đúng giờ
-            </span>
-          </div>
-
-          <div style={{ padding: "14px 18px", position: "relative" }}>
-            <svg
-              viewBox="0 0 500 180"
-              style={{ width: "100%", height: "180px", overflow: "visible" }}
-            >
-              {/* Background Grid Lines */}
-              <line x1="30" y1="20" x2="480" y2="20" stroke="#f1f5f9" strokeWidth="1" strokeDasharray="3 3" />
-              <line x1="30" y1="60" x2="480" y2="60" stroke="#f1f5f9" strokeWidth="1" strokeDasharray="3 3" />
-              <line x1="30" y1="100" x2="480" y2="100" stroke="#f1f5f9" strokeWidth="1" strokeDasharray="3 3" />
-              <line x1="30" y1="140" x2="480" y2="140" stroke="#e2e8f0" strokeWidth="1" />
-              <line x1="30" y1="20" x2="30" y2="140" stroke="#e2e8f0" strokeWidth="1" />
-
-              {/* Regression Trend Line */}
-              <line x1="35" y1="135" x2="475" y2="25" stroke="#94a3b8" strokeDasharray="4 4" strokeWidth="1.5" />
-
-              {/* Data Points */}
-              {scatterPoints.map((pt, i) => {
-                const cx = 35 + (pt.x / 100) * 440;
-                const cy = 135 - (pt.y / 100) * 110;
-                return (
-                  <circle
-                    key={i}
-                    cx={cx}
-                    cy={cy}
-                    r={5}
-                    fill={pt.isDelayed ? "#ef4444" : "#05c48c"}
-                    stroke="#ffffff"
-                    strokeWidth="1.5"
-                    opacity="0.88"
-                    style={{ cursor: "pointer", transition: "transform 0.2s" }}
-                  >
-                    <title>{`${pt.flight}: ${pt.distance} dặm, ${pt.elapsed} phút (${pt.isDelayed ? "Trễ" : "Đúng giờ"})`}</title>
-                  </circle>
-                );
-              })}
-            </svg>
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: "11px", color: "#64748b", marginTop: "4px", paddingLeft: "15px", paddingRight: "5px" }}>
-              <span>Cự ly: 0 dặm (Thời lượng: 0m)</span>
-              <span>2.600+ dặm (380+ phút)</span>
-            </div>
-          </div>
-        </section>
-      </div>
-    </>
+    <section className="analytics-panel">
+      <h2>{title}</h2>
+      <p>{description}</p>
+      {children}
+    </section>
   );
 }
 
+function Plot({ points, mode = "line", label, xUnit, yUnit }: {
+  points: { x: number; y: number; label: string }[];
+  mode?: "line" | "bar" | "scatter";
+  label: string;
+  xUnit: string;
+  yUnit: string;
+}) {
+  if (!points.length) return <p className="analytics-empty">Chưa đủ dữ liệu cho biểu đồ này.</p>;
+
+  const xMin = Math.min(...points.map(point => point.x));
+  const xRange = Math.max(1, Math.max(...points.map(point => point.x)) - xMin);
+  const yMin = Math.min(0, ...points.map(point => point.y));
+  const yMax = Math.max(1, ...points.map(point => point.y));
+  const barWidth = Math.min(32, 380 / points.length);
+  const x = (value: number) => 72 + (value - xMin) * 414 / xRange;
+  const y = (value: number) => 173 - (value - yMin) * 137 / (yMax - yMin);
+  const axisLabel = (point: (typeof points)[number]) => mode === "line" ? point.label : number(point.x);
+  const middle = points[Math.floor(points.length / 2)];
+  const ticks = mode === "scatter"
+    ? [xMin, xMin + xRange / 2, xMin + xRange].map(value => ({ x: value, y: 0, label: "" }))
+    : [points[0], middle, points[points.length - 1]].filter((point, index, all) => all.indexOf(point) === index);
+
+  return (
+    <svg className="analytics-plot" viewBox="0 0 530 227" role="img" aria-label={label}>
+      <text x="12" y="20">{yUnit}</text>
+      {[yMin, (yMin + yMax) / 2, yMax].map(value => (
+        <g key={value}>
+          <line className="analytics-gridline" x1="54" x2="504" y1={y(value)} y2={y(value)} />
+          <text x="49" y={y(value) + 4} textAnchor="end">{number(Math.round(value * 10) / 10)}</text>
+        </g>
+      ))}
+      {mode === "line" && (
+        <polyline className="analytics-series-line" points={points.map(point => x(point.x) + "," + y(point.y)).join(" ")} />
+      )}
+      {points.map((point, index) => mode === "bar" ? (
+        <rect key={index} className="analytics-series-mark" x={x(point.x) - barWidth / 2}
+          y={y(point.y)} width={barWidth} height={y(0) - y(point.y)} rx="2">
+          <title>{point.label}</title>
+        </rect>
+      ) : (
+        <circle key={index} className="analytics-series-mark" cx={x(point.x)} cy={y(point.y)} r={mode === "scatter" ? 3 : 2.4}>
+          <title>{mode === "line" ? point.label + " · " + number(point.y) : point.label}</title>
+        </circle>
+      ))}
+      {ticks.map(point => <text key={point.x} x={x(point.x)} y="194" textAnchor="middle">{axisLabel(point)}</text>)}
+      <text x="278" y="217" textAnchor="middle">{xUnit}</text>
+    </svg>
+  );
+}
+
+export function AnalyticsView() {
+  const [grain, setGrain] = useState<Grain>("day");
+  const [selected, setSelected] = useState("");
+  const [zoom, setZoom] = useState(0);
+  const [refresh, setRefresh] = useState(0);
+  const [result, setResult] = useState<{ key: string; data?: AnalyticsData; error?: boolean }>();
+  const key = grain + "/" + selected + "/" + refresh;
+  const data = result?.key === key ? result.data : undefined;
+  const failed = result?.key === key && result.error;
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout>;
+    async function update() {
+      try {
+        const next = await load(grain, selected, controller.signal);
+        if (!controller.signal.aborted) setResult({ key, data: next });
+      } catch {
+        if (!controller.signal.aborted) setResult({ key, error: true });
+      } finally {
+        if (!controller.signal.aborted) timer = setTimeout(update, 15000);
+      }
+    }
+    void update();
+    return () => {
+      controller.abort();
+      clearTimeout(timer);
+    };
+  }, [grain, key, selected]);
+
+  const periods = data?.line.items.filter(row => row.flight_count > 0) ?? [];
+  const line = data?.line.items.slice(zoom === 0 ? 0 : -zoom) ?? [];
+  const selectedPeriod = data && selected !== data.period ? "" : selected;
+  const summary = data?.line.summary;
+  const dateRange = summary?.date_from && summary.date_to
+    ? flightDateRange(summary.date_from, new Date(Date.parse(summary.date_to) - 86_400_000).toISOString().slice(0, 10))
+    : null;
+
+  return (
+    <section className="analytics-page" aria-label="Phân tích dữ liệu chuyến bay">
+      <div className="analytics-controls">
+        <div className="analytics-field">
+          <span>Gom theo</span>
+          <CustomSelect
+            ariaLabel="Gom theo"
+            value={grain}
+            onChange={value => {
+              setGrain(value as Grain);
+              setSelected("");
+            }}
+            options={Object.entries(grains).map(([value, label]) => ({ value, label }))}
+          />
+        </div>
+        <div className="analytics-field">
+          <span>Khoảng xem đường thời gian</span>
+          <CustomSelect
+            ariaLabel="Khoảng xem đường thời gian"
+            value={String(zoom)}
+            onChange={value => setZoom(Number(value))}
+            options={[
+              { value: "0", label: "Toàn bộ" },
+              { value: "30", label: "30 kỳ gần nhất" },
+              { value: "7", label: "7 kỳ gần nhất" },
+            ]}
+          />
+        </div>
+        <div className="analytics-field">
+          <span>Kỳ của histogram và scatter</span>
+          <CustomSelect
+            ariaLabel="Kỳ của histogram và scatter"
+            value={selectedPeriod}
+            onChange={setSelected}
+            options={[
+              { value: "", label: "Kỳ mới nhất" },
+              ...(!data && selected ? [{ value: selected, label: selected }] : []),
+              ...periods.map(({ period_start }) => ({ value: period_start, label: period_start })),
+            ]}
+          />
+        </div>
+        <button type="button" onClick={() => setRefresh(value => value + 1)}>Tải lại</button>
+      </div>
+
+      {failed && <p className="analytics-empty" role="alert">Không tải được kết quả từ Analytics API.</p>}
+      {!data && !failed && <p className="analytics-empty" role="status">Đang tải kết quả phân tích…</p>}
+      {data && !data.line.summary.ready && (
+        <p className="analytics-empty" role="status">Chưa có kết quả phân tích. Chạy Analytics POST /run để tạo kết quả.</p>
+      )}
+
+      {data?.line.summary.ready && (
+        <>
+          <p className="analytics-status">
+            {dateRange && <><strong>Ngày chuyến bay</strong> · {dateRange} · </>}
+            {number(data.line.summary.flight_count)} chuyến đã nạp
+            {data.line.summary.updated_at && (
+              <> · Tổng hợp lúc {new Date(data.line.summary.updated_at).toLocaleString("vi-VN")}</>
+            )}
+          </p>
+          <div className="analytics-charts">
+            <Panel title="Lưu lượng chuyến bay" description={"Số chuyến theo " + grains[grain].toLowerCase()}>
+              <Plot label="Đường thời gian số chuyến bay" xUnit="Ngày bắt đầu kỳ" yUnit="Chuyến"
+                points={line.map(row => timePoint(row.period_start, row.flight_count))} />
+            </Panel>
+            <Panel title="Xu hướng lưu lượng" description={"Xu hướng sau khi gom theo " + grains[data.trend.grain].toLowerCase()}>
+              <Plot label="Đường xu hướng số chuyến bay" xUnit="Ngày bắt đầu kỳ" yUnit="Chuyến"
+                points={data.trend.items.flatMap(row => row.trend == null ? [] : [timePoint(row.period_start, row.trend)])} />
+            </Panel>
+            <Panel title="Phân bố thời lượng bay" description={"Histogram theo khoảng 30 phút · " + data.period}>
+              <Plot mode="bar" label="Histogram thời lượng bay" xUnit="Thời lượng dự kiến (phút)" yUnit="Chuyến"
+                points={data.histogram.map(row => ({ x: row.bin_start_min, y: row.flight_count,
+                  label: row.bin_start_min + "–" + row.bin_end_min + " phút · " + number(row.flight_count) + " chuyến" }))} />
+            </Panel>
+            <Panel title="Khoảng cách và thời lượng" description={"Scatter · " + data.period
+              + (data.moreScatter ? " · Hiển thị 500 chuyến đầu kỳ" : "")}>
+              <Plot mode="scatter" label="Điểm phân tán khoảng cách và thời lượng" xUnit="Khoảng cách (dặm)" yUnit="Phút"
+                points={data.scatter.flatMap(row => row.distance_miles == null ? [] :
+                  [{ x: row.distance_miles, y: row.scheduled_elapsed_min,
+                    label: number(row.distance_miles) + " dặm · " + number(row.scheduled_elapsed_min) + " phút" }])} />
+            </Panel>
+            <Panel title="Mùa vụ lưu lượng" description={"Thành phần mùa vụ sau khi gom theo " + grains[data.seasonality.grain].toLowerCase()}>
+              <Plot label="Đường mùa vụ số chuyến bay" xUnit="Ngày bắt đầu kỳ" yUnit="Chuyến"
+                points={data.seasonality.items.flatMap(row =>
+                  row.seasonal == null ? [] : [timePoint(row.period_start, row.seasonal)])} />
+            </Panel>
+            <Panel title="Ma trận tương quan Pearson" description="Hệ số tương quan giữa các biến trong khoảng dữ liệu phân tích.">
+              {data.correlation.variables.length > 0 ? (
+                <table className="analytics-matrix">
+                  <thead><tr><th scope="col">Biến</th>{data.correlation.variables.map(variable =>
+                    <th scope="col" key={variable}>{variableLabels[variable] ?? variable}</th>)}</tr></thead>
+                  <tbody>{data.correlation.variables.map((variable, row) => (
+                    <tr key={variable}>
+                      <th scope="row">{variableLabels[variable] ?? variable}</th>
+                      {data.correlation.matrix[row].map((value, col) => (
+                        <td key={col} title={number(data.correlation.samples[row][col]) + " mẫu"}>
+                          {value == null ? "—" : value.toFixed(2)}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}</tbody>
+                </table>
+              ) : <p className="analytics-empty">Chưa có dữ liệu tương quan.</p>}
+            </Panel>
+          </div>
+        </>
+      )}
+    </section>
+  );
+}

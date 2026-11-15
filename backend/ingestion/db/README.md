@@ -47,6 +47,13 @@ ORDER BY flight_number;
 
 ## Kết quả Analytics
 
+Nếu dùng các file `flight_weather_*.csv`, nạp mẫu từ mỗi ngày qua Ingestion bằng lệnh sau khi các container đã chạy. Lệnh lấy tối đa 100 chuyến mỗi ngày và dùng khóa chuyến bay hiện có để tránh chèn trùng. Biểu đồ đếm các chuyến đã nạp trong mẫu.
+
+```powershell
+docker compose -f backend/docker-compose.yml exec -T ingestion python -m app.backfill /data-source/flight_weather_2025_01.csv /data-source/flight_weather_2025_02.csv /data-source/flight_weather_2025_03.csv --per-day 100
+Invoke-RestMethod -Method Post http://localhost:2002/api/analytics/run
+```
+
 Khoảng ngày gồm ngày bắt đầu và loại trừ ngày kết thúc. Hàm nhận từ 1 đến 1.096 ngày. Tuần bắt đầu thứ Hai. Bucket ở đầu hoặc cuối có thể chỉ bao gồm một phần tuần hoặc tháng.
 
 ```sql

@@ -1,6 +1,6 @@
 "use client";
 
-import { ViewMode } from "./flight-types";
+import { flightDateRange, ViewMode } from "./flight-types";
 import { useFlightObservatory } from "./hooks/use-flight-observatory";
 import { Icon } from "./components/icons";
 import { TopHeader } from "./components/top-header";
@@ -28,27 +28,38 @@ export default function Dashboard({ view }: { view: ViewMode }) {
       />
 
       <main className="main-workspace">
-        <FilterBar
-          airport={obs.airport}
-          setAirport={obs.setAirport}
-          destAirport={obs.destAirport}
-          setDestAirport={obs.setDestAirport}
-          carrier={obs.carrier}
-          setCarrier={obs.setCarrier}
-          flightStatus={obs.flightStatus}
-          setFlightStatus={obs.setFlightStatus}
-          selectedClusterId={obs.selectedClusterId}
-          setSelectedClusterId={obs.setSelectedClusterId}
-          search={obs.search}
-          setSearch={obs.setSearch}
-          uniqueOrigins={obs.uniqueOrigins}
-          uniqueDests={obs.uniqueDests}
-          uniqueCarriers={obs.uniqueCarriers}
-          centroids={obs.centroids}
-          busy={obs.busy}
-          onRefresh={obs.refresh}
-          onResetFilters={obs.resetFilters}
-        />
+        {(obs.isFlights || obs.isOverview || obs.isClustering || obs.isForecast) && (
+          <p className="analytics-status">
+            <strong>Dữ liệu chuyến bay theo bộ lọc</strong>{" · "}
+            {obs.serverMeta?.first_flight_date && obs.serverMeta?.last_flight_date
+              ? flightDateRange(obs.serverMeta.first_flight_date, obs.serverMeta.last_flight_date)
+              : "Chưa có khoảng ngày"}
+            {obs.updated && <> · Nạp gần nhất {new Date(obs.updated).toLocaleString("vi-VN")}</>}
+          </p>
+        )}
+        {!obs.isAnalytics && (
+          <FilterBar
+            airport={obs.airport}
+            setAirport={obs.setAirport}
+            destAirport={obs.destAirport}
+            setDestAirport={obs.setDestAirport}
+            carrier={obs.carrier}
+            setCarrier={obs.setCarrier}
+            flightStatus={obs.flightStatus}
+            setFlightStatus={obs.setFlightStatus}
+            selectedClusterId={obs.selectedClusterId}
+            setSelectedClusterId={obs.setSelectedClusterId}
+            search={obs.search}
+            setSearch={obs.setSearch}
+            uniqueOrigins={obs.uniqueOrigins}
+            uniqueDests={obs.uniqueDests}
+            uniqueCarriers={obs.uniqueCarriers}
+            centroids={obs.centroids}
+            busy={obs.busy}
+            onRefresh={obs.refresh}
+            onResetFilters={obs.resetFilters}
+          />
+        )}
 
         {obs.isFlights && (
           <FlightsView
@@ -128,15 +139,7 @@ export default function Dashboard({ view }: { view: ViewMode }) {
           />
         )}
 
-        {obs.isAnalytics && (
-          <AnalyticsView
-            flights={obs.mapFlights && obs.mapFlights.length > 0 ? obs.mapFlights : obs.paginatedFlights}
-            total={obs.total}
-            rate={obs.rate}
-            avgDelay={obs.avg}
-            avgDistance={obs.flightsAvgDistance || 1252}
-          />
-        )}
+        {obs.isAnalytics && <AnalyticsView />}
 
         {obs.isOverview && (
           <OverviewView
