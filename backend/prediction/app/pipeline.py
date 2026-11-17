@@ -11,6 +11,7 @@ import csv
 from datetime import datetime, timezone
 import hashlib
 import logging
+import json
 from pathlib import Path
 import sqlite3
 from typing import Any
@@ -95,6 +96,8 @@ class Pipeline:
             self._bundle = joblib.load(model_path)
             return self._bundle
 
+        if self.settings.live_api_mode:
+            raise FileNotFoundError("Live mode requires a pre-trained prediction_bundle.joblib; CSV training is disabled")
         logger.info("Prediction model artifact not found at %s; training initial model...", model_path)
         self._bundle = train_and_save_model(self.settings)
         return self._bundle
@@ -116,11 +119,18 @@ class Pipeline:
                     with conn.cursor() as cur:
                         cur.execute(
                             """
-                            SELECT flight_code, op_unique_carrier, origin, dest,
-                                   crs_dep_time, dep_hour, day_of_week, distance,
-                                   crs_elapsed_time, delay_minutes
-                            FROM ingested_flights
-                            ORDER BY ingested_at DESC
+                            SELECT f.flight_code, f.op_unique_carrier, f.origin, f.dest,
+                                   d.payload AS live_details_json,
+                                   f.fl_date, f.crs_dep_time, f.dep_hour, f.day_of_week, f.distance,
+                                   f.crs_elapsed_time, f.delay_minutes,
+                                   w.temperature_c, w.wind_speed_kmh, w.wind_gust_kmh,
+                                   w.visibility_km, w.precipitation_mm, w.pressure_hpa,
+                                   w.observed_at AS weather_observed_at, w.source AS weather_source
+                            FROM ingested_flights f
+                            JOIN live_flight_details d ON d.flight_key=f.flight_key
+                            LEFT JOIN airport_weather w ON w.airport_code=f.origin
+                              AND w.observed_at=(SELECT MAX(w2.observed_at) FROM airport_weather w2 WHERE w2.airport_code=f.origin)
+                            ORDER BY f.ingested_at DESC
                             LIMIT 150
                             """
                         )
@@ -133,11 +143,18 @@ class Pipeline:
                         cur = conn.cursor()
                         cur.execute(
                             """
-                            SELECT flight_code, op_unique_carrier, origin, dest,
-                                   crs_dep_time, dep_hour, day_of_week, distance,
-                                   crs_elapsed_time, delay_minutes
-                            FROM ingested_flights
-                            ORDER BY rowid DESC
+                            SELECT f.flight_code, f.op_unique_carrier, f.origin, f.dest,
+                                   d.payload AS live_details_json,
+                                   f.fl_date, f.crs_dep_time, f.dep_hour, f.day_of_week, f.distance,
+                                   f.crs_elapsed_time, f.delay_minutes,
+                                   w.temperature_c, w.wind_speed_kmh, w.wind_gust_kmh,
+                                   w.visibility_km, w.precipitation_mm, w.pressure_hpa,
+                                   w.observed_at AS weather_observed_at, w.source AS weather_source
+                            FROM ingested_flights f
+                            JOIN live_flight_details d ON d.flight_key=f.flight_key
+                            LEFT JOIN airport_weather w ON w.airport_code=f.origin
+                              AND w.observed_at=(SELECT MAX(w2.observed_at) FROM airport_weather w2 WHERE w2.airport_code=f.origin)
+                            ORDER BY f.rowid DESC
                             LIMIT 150
                             """
                         )
@@ -145,6 +162,22 @@ class Pipeline:
         except Exception as exc:
             logger.debug("Could not read candidate flights from DB (%s): %s", src_url, exc)
 
+        if self.settings.live_api_mode:
+            today = datetime.now(timezone.utc).date()
+            eligible = []
+            for row in rows:
+                try:
+                    detail = json.loads(row["live_details_json"])
+                    if detail.get("flight_status") in ("cancelled", "diverted", "landed"):
+                        continue
+                    observed = datetime.fromisoformat(row["weather_observed_at"])
+                    flight_day = datetime.fromisoformat(row["fl_date"]).date()
+                    age = (datetime.now(timezone.utc)-observed).total_seconds()
+                    if -60 <= age <= 7200 and abs((flight_day-today).days) <= 1:
+                        eligible.append(row)
+                except (TypeError, ValueError, KeyError):
+                    continue
+            return eligible
         if rows:
             return [_enrich_flight_weather(r) for r in rows]
 
@@ -183,6 +216,8 @@ class Pipeline:
         return [_enrich_flight_weather(r) for r in rows]
 
     def _execute_inference_sync(self) -> PipelineOutput:
+        if self.settings.live_api_mode and not Path(self.settings.model_path).is_file():
+            return PipelineOutput(items=[], metadata={"ready": False, "reason": "model_missing", "message": "Install a pre-trained prediction_bundle.joblib in the model volume. Live mode never trains from CSV.", "total_predicted": 0})
         bundle = self._load_or_build_bundle()
         scaler = bundle["scaler"]
         regressor = bundle["regressor"]
@@ -197,6 +232,7 @@ class Pipeline:
                     "model_version": bundle.get("model_version", "prediction-v1.0"),
                     "ready": False,
                     "total_predicted": 0,
+                    "reason": "waiting_for_live_flights_and_weather",
                 },
             )
 
@@ -235,6 +271,9 @@ class Pipeline:
                 "delay": delay_val,
                 "probability": prob_val,
                 "risk_level": risk_level,
+                "weather_source": c.get("weather_source", "demo"),
+                "weather_observed_at": c.get("weather_observed_at"),
+                "weather_defaults_used": [name for name in FEATURE_NAMES[6:] if c.get(name) is None],
                 "weather": {
                     "temperature_c": round(float(X_infer[idx][6]), 1),
                     "wind_speed_kmh": round(float(X_infer[idx][7]), 1),

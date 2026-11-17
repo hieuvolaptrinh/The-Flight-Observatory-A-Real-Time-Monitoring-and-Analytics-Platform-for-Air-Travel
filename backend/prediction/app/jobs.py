@@ -38,7 +38,7 @@ class JobRunner:
                 finished_at = datetime.now(timezone.utc)
                 # Publish only a complete result; preserve the last good result on failure.
                 self.results = Results(
-                    service=self.service, ready=True,
+                    service=self.service, ready=bool(output.metadata.get("ready", True)),
                     updated_at=finished_at, output=output,
                 )
                 job.status = "completed"

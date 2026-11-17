@@ -37,7 +37,7 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
 
     app = FastAPI(
         title="Flight Ingestion Service",
-        description="Polls sliding-window batches from data-simulator, normalizes & deduplicates flights, and persists to DB.",
+        description="Polls AirLabs schedules and OpenWeather, updates flights and caches weather in DB.",
         version="1.1.0",
         root_path=settings.root_path,
         lifespan=lifespan,
@@ -63,9 +63,20 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
                 max(0, deadline - asyncio.get_running_loop().time()) if deadline is not None else None
             ),
             "job_running": runner.latest is not None and runner.latest.status == "running",
-            "simulator_base_url": settings.simulator_base_url,
+            "source": "airlabs",
+            "provider_status": runner.pipeline.providers.last_status,
             "storage": runner.pipeline.repository.storage_type,
         }
+
+    @app.get("/providers", tags=["operations"])
+    async def providers():
+        store = app.state.runner.pipeline.providers.store
+        status, _ = await asyncio.to_thread(store.cached, "ingestion_status")
+        return {"status": status, "usage": await asyncio.to_thread(store.usage)}
+
+    @app.get("/raw", tags=["results"])
+    async def raw_flights(cursor: int = Query(0, ge=0), window_size: int = Query(12, ge=1, le=100)):
+        return await asyncio.to_thread(app.state.runner.pipeline.repository.raw_live_flights, cursor, window_size)
 
     @app.get("/results", response_model=Results, tags=["results"])
     @app.get("/flights", response_model=Results, tags=["results"])

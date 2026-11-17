@@ -28,6 +28,16 @@ export default function Dashboard({ view }: { view: ViewMode }) {
       />
 
       <main className="main-workspace">
+        <p className="analytics-status">
+          <strong>Nguồn: AirLabs · OpenWeather</strong> · Dữ liệu cập nhật định kỳ, bản đồ mô phỏng vị trí theo lịch bay.
+          {obs.serverMeta?.provider_status?.checked_at && <> · Kiểm tra API: {new Date(obs.serverMeta.provider_status.checked_at).toLocaleString("vi-VN")}</>}
+        </p>
+        {!!obs.serverMeta?.provider_status?.warnings?.length && (
+          <p className="analytics-status" role="status">{obs.serverMeta.provider_status.warnings.join(" · ")}</p>
+        )}
+        {obs.isForecast && !obs.filteredPredictions.length && (
+          <p className="analytics-status">Chưa có dự báo: cần model đã huấn luyện, chuyến bay và thời tiết phù hợp. Hệ thống không tự tạo dự báo từ delay quan sát.</p>
+        )}
         {(obs.isFlights || obs.isOverview || obs.isClustering || obs.isForecast) && (
           <p className="analytics-status">
             <strong>Dữ liệu chuyến bay theo bộ lọc</strong>{" · "}

@@ -33,18 +33,23 @@ export interface FlightItem {
   dest: string;
   route: string;
   crs_dep_time: string;
-  crs_arr_time: string;
-  crs_elapsed_time: number;
-  distance: number;
-  delay_minutes: number;
-  delay_status: "on_time" | "moderate_delay" | "severe_delay";
-  is_delayed: number;
+  crs_arr_time: string | null;
+  crs_elapsed_time: number | null;
+  distance: number | null;
+  delay_minutes: number | null;
+  delay_status: "on_time" | "moderate_delay" | "severe_delay" | "unknown";
+  source?: string;
+  delay_kind?: string;
+  flight_status?: string;
+  is_delayed: number | null;
   day_of_week?: number;
   dep_hour?: number;
   ingested_at: string;
 }
 
 export interface ServerFlightMeta {
+  unknown_delay_count?: number;
+  provider_status?: { state: string; checked_at?: string; warnings: string[] };
   first_flight_date?: string | null;
   last_flight_date?: string | null;
   total_stored: number;
@@ -204,12 +209,14 @@ export const CLUSTER_COLORS: Record<number, string> = {
 };
 
 export const statusLabels: Record<FlightItem["delay_status"], string> = {
+  unknown: "Chưa có dữ liệu delay",
   on_time: "Đúng giờ (< 15p)",
   moderate_delay: "Trễ nhẹ (15–44p)",
   severe_delay: "Trễ nặng (≥ 45p)",
 };
 
-export const statusBadgeClass: Record<FlightItem["delay_status"], "low" | "medium" | "high"> = {
+export const statusBadgeClass: Record<FlightItem["delay_status"], "low" | "medium" | "high" | "unknown"> = {
+  unknown: "unknown",
   on_time: "low",
   moderate_delay: "medium",
   severe_delay: "high",

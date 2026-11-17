@@ -70,7 +70,7 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
 
     app = FastAPI(
         title=settings.service_name,
-        description="PostgreSQL-backed flight charts and Gemini forecasts for the simulator timeline.",
+        description="PostgreSQL-backed flight charts and Gemini forecasts for the stored flight timeline.",
         version="0.1.0",
         root_path=settings.root_path,
         lifespan=lifespan,

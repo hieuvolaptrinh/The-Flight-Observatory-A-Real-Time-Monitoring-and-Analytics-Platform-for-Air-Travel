@@ -21,6 +21,7 @@ class JobRunner:
         self.pipeline = pipeline
         self.latest: Job | None = None
         self._lock = asyncio.Lock()
+        self.waiting_metadata = None
 
     def get_results(
         self,
@@ -31,6 +32,8 @@ class JobRunner:
             entity_type=entity_type,
             cluster_id=cluster_id,
         )
+        if self.waiting_metadata:
+            queried["metadata"].update(self.waiting_metadata)
         return Results(
             service=self.service,
             storage=self.pipeline.repository.storage_type,
@@ -57,7 +60,8 @@ class JobRunner:
             self.latest = job
             logger.info("Job started: service=%s id=%s trigger=%s", self.service, job.id, trigger)
             try:
-                await self.pipeline.run()
+                output = await self.pipeline.run()
+                self.waiting_metadata = output.metadata if output.metadata.get("ready") is False else None
                 job.status = "completed"
             except NotImplementedError as exc:
                 job.status = "not_implemented"
