@@ -312,6 +312,50 @@ p {
   gap: 36px;
 }
 
+.dashboard-context {
+  display: grid;
+  gap: 10px;
+}
+
+.dashboard-source-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+}
+
+.dashboard-source-details {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.dashboard-source-details summary {
+  cursor: pointer;
+  padding: 5px 0;
+  line-height: 1.65;
+}
+
+.dashboard-source-details summary span {
+  display: inline-block;
+  margin-inline-start: 8px;
+}
+
+.dashboard-source-warning {
+  color: #8a4b05;
+  background: #fff4dc;
+  border-radius: 999px;
+  padding: 0 7px;
+}
+
+.dashboard-source-content {
+  display: grid;
+  gap: 4px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
 .entity-summary-card {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -1315,6 +1359,10 @@ p {
   filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.75));
   transition: transform 0.08s linear;
   will-change: transform;
+}
+
+.fa-plane-rotator[data-simulation-state="arrived"] {
+  opacity: 0.6;
 }
 
 .fa-plane-rotator.selected {
@@ -2583,6 +2631,48 @@ td strong {
   color: var(--ink-secondary);
   font-size: 12px;
   font-weight: 600;
+}
+
+.analytics-date-controls {
+  gap: 8px;
+}
+
+.analytics-date-controls input[type="date"] {
+  box-sizing: border-box;
+  width: 150px;
+  max-width: 100%;
+  min-height: 36px;
+  padding: 5px 10px;
+  border: 1px solid var(--slate-border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  color-scheme: light;
+}
+
+.analytics-date-controls input[type="date"]:focus-visible {
+  border-color: #0a8c74;
+  outline: 2px solid #0a8c7460;
+  outline-offset: 1px;
+}
+
+.analytics-date-controls input[type="date"]::-webkit-calendar-picker-indicator {
+  cursor: pointer;
+  opacity: 0.65;
+}
+
+@media (max-width: 520px) {
+  .analytics-date-controls > label {
+    flex: 1 1 calc(50% - 8px);
+    min-width: 0;
+  }
+
+  .analytics-date-controls input[type="date"] {
+    width: 100%;
+  }
 }
 
 .analytics-controls > button {

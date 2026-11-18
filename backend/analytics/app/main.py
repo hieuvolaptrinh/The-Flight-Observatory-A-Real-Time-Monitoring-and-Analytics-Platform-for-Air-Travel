@@ -85,6 +85,14 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
             "storage": "postgresql",
         }
 
+    @app.get("/coverage", tags=["results"])
+    async def coverage():
+        async with await active.connect() as db:
+            return await (await db.execute("""
+                SELECT min(flight_date) AS first_date, max(flight_date) AS last_date
+                FROM flight_data.flights
+            """)).fetchone()
+
     @app.get("/results", response_model=Results, tags=["results"])
     @app.get("/summary", response_model=Results, tags=["results"])
     async def results(window: Annotated[DateWindow, Query()]):

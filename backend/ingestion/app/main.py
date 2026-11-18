@@ -1,12 +1,13 @@
 import asyncio
 from contextlib import asynccontextmanager, suppress
 import logging
+from typing import Literal
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import Settings
-from app.jobs import JobAlreadyRunning, JobRunner
+from app.jobs import JobRunner
 from app.pipeline import Pipeline
 from app.schemas import Job, Results
 
@@ -89,6 +90,9 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
         sort: str | None = Query(default="time", description="Sort by: time, delay, distance"),
         limit: int = Query(default=5, ge=1, le=1000, description="Max records to return"),
         offset: int = Query(default=0, ge=0, description="Pagination offset"),
+        source: Literal["all", "airlabs", "legacy"] = "all",
+        cluster_id: int | None = Query(default=None, ge=0),
+        overview: bool = False,
     ):
         runner: JobRunner = app.state.runner
         return await asyncio.to_thread(
@@ -101,6 +105,9 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
             sort=sort,
             limit=limit,
             offset=offset,
+            source=source,
+            cluster_id=cluster_id,
+            include_overview=overview,
         )
 
     @app.delete("/flights", tags=["operations"])
@@ -113,20 +120,6 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
     @app.get("/jobs/latest", response_model=Job | None, tags=["operations"])
     async def latest_job():
         return app.state.runner.latest
-
-    @app.post("/run", response_model=Job, tags=["operations"])
-    async def run():
-        try:
-            return await app.state.runner.run_once()
-        except JobAlreadyRunning as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        except NotImplementedError as exc:
-            raise HTTPException(
-                status_code=501,
-                detail=app.state.runner.latest.model_dump(mode="json"),
-            ) from exc
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Pipeline failed: {exc}") from exc
 
     return app
 

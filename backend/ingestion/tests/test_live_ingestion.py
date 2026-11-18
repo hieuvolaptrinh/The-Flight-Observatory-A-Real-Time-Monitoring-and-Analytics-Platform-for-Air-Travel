@@ -1,6 +1,6 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import sqlite3
 
@@ -88,6 +88,8 @@ def test_api_to_database_refresh_cache_and_no_duplicates(repo):
     first = repo.query_flights()
     assert first["metadata"]["total_stored"] == 1
     assert first["metadata"]["unknown_delay_count"] == 1
+    assert first["items"][0]["origin_coordinate"]["lat"] == AIRPORTS["JFK"]["lat"]
+    assert first["items"][0]["dest_coordinate"]["lon"] == AIRPORTS["LAX"]["lng"]
     delay[0] = 25
     asyncio.run(pipeline.run())
     refreshed = repo.query_flights()
@@ -110,6 +112,39 @@ def test_budget_persists_and_is_atomic(repo):
     assert sum(results) == 3
     reopened = LiveStore(FlightRepository(repo.database_url))
     assert not reopened.reserve("test", 3, 1)
+
+
+def test_poll_window_is_shared_across_runners_and_restarts(repo):
+    started = datetime(2026, 11, 18, 12, tzinfo=timezone.utc)
+    workers = [LiveStore(repo) for _ in range(4)]
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        delays = list(pool.map(lambda store: store.reserve_poll(300, started), workers))
+    assert sorted(delays) == [0, 300, 300, 300]
+
+    reopened = LiveStore(FlightRepository(repo.database_url))
+    assert reopened.reserve_poll(300, started + timedelta(seconds=299)) == 1
+    assert reopened.reserve_poll(300, started + timedelta(seconds=300)) == 0
+
+
+def test_route_cluster_filter_runs_before_pagination_and_overview_uses_full_scope(repo):
+    pipeline = Pipeline(settings(repo), repo)
+    schedules = [normalize({**SCHEDULE, "flight_number": str(n), "dep_delayed": n * 10}) for n in range(1, 4)]
+    asyncio.run(pipeline.ingest_payload({"source": "airlabs", "data": schedules}))
+    with repo._connect_sqlite() as conn:
+        conn.executescript("""
+            CREATE TABLE clustering_runs (run_id TEXT, created_at TEXT);
+            CREATE TABLE cluster_assignments (run_id TEXT, entity_type TEXT, entity_code TEXT, cluster_id INTEGER);
+            INSERT INTO clustering_runs VALUES ('old', '2026-11-17'), ('new', '2026-11-18');
+            INSERT INTO cluster_assignments VALUES ('old', 'route', 'JFK → LAX', 1), ('new', 'route', 'JFK → LAX', 2);
+        """)
+
+    scoped = repo.query_flights(source="airlabs", cluster_id=2, limit=1, offset=1, include_overview=True)
+    assert len(scoped["items"]) == 1
+    assert scoped["metadata"]["filtered_count"] == 3
+    assert scoped["metadata"]["hourly"] == [{"hour": 10, "flights": 3, "known": 3, "delayed": 2}]
+    assert scoped["metadata"]["airport_stats"][0]["flight_count"] == 3
+    assert repo.query_flights(cluster_id=1)["metadata"]["filtered_count"] == 0
+    assert repo.query_flights(source="legacy")["metadata"]["total_stored"] == 0
 
 
 def test_billing_cycle():
@@ -189,7 +224,10 @@ def test_health_and_raw_endpoints_without_secrets(repo):
         assert raw["total"] == 1
         assert raw["data"][0]["raw"] == SCHEDULE
         assert client.get("/raw?cursor=-1").status_code == 422
-        assert "test-key" not in client.get("/providers").text
+        providers = client.get("/providers")
+        assert "test-key" not in providers.text
+        assert client.post("/run").status_code == 404
+        assert client.get("/providers").json()["usage"] == providers.json()["usage"] == []
 
 
 def test_failed_source_preserves_previous_flights(repo):

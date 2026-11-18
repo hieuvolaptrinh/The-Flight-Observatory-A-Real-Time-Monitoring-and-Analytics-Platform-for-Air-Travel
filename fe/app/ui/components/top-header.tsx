@@ -7,7 +7,6 @@ interface TopHeaderProps {
   pageSubtitle: string;
   apiMode: "gateway" | "ingestion" | "demo";
   busy: boolean;
-  onTriggerIngestion: () => void;
   onTriggerClustering: () => void;
   onExportCsv: () => void;
 }
@@ -17,7 +16,6 @@ export function TopHeader({
   pageSubtitle,
   apiMode,
   busy,
-  onTriggerIngestion,
   onTriggerClustering,
   onExportCsv,
 }: TopHeaderProps) {
@@ -62,15 +60,6 @@ export function TopHeader({
             Xuất CSV
           </button>
           <IngestionCountdown direct={apiMode === "ingestion"} />
-          <button
-            type="button"
-            className="button primary-action"
-            onClick={onTriggerIngestion}
-            disabled={busy}
-          >
-            <Icon name="refresh" size={15} />
-            Lấy dữ liệu API
-          </button>
         </div>
       </div>
     </header>

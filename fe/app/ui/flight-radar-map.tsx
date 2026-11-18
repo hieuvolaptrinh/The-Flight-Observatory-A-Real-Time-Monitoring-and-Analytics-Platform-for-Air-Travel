@@ -6,6 +6,7 @@ import {
   FlightItem,
   ClusterAssignment,
   CLUSTER_COLORS,
+  flightRouteKey,
   statusLabels,
   number,
 } from "./flight-types";
@@ -21,9 +22,8 @@ interface FlightRadarMapProps {
   onToggleAutoPoll: () => void;
   apiMode: "gateway" | "ingestion" | "demo";
   totalMatchedCount: number;
-  totalStoredInDb?: number;
-  airportClusterMap?: Record<string, ClusterAssignment>;
-  selectedClusterId?: number | null;
+  routeClusterMap: Record<string, ClusterAssignment>;
+  selectedClusterId: number | null;
 }
 
 interface EnrichedFlight {
@@ -34,6 +34,12 @@ interface EnrichedFlight {
   durationSec: number;
   depMinutes: number;
   arrMinutes: number;
+}
+
+type FlightTimeline = Pick<EnrichedFlight, "initialProgress" | "durationSec"> & { startedAt: number };
+
+function simulatedProgress(timeline: FlightTimeline, nowSec: number) {
+  return Math.min(1, timeline.initialProgress + (nowSec - timeline.startedAt) / timeline.durationSec);
 }
 
 type MapStyleMode = "navy" | "osm-dark" | "satellite" | "osm";
@@ -81,6 +87,15 @@ function parseTimeToMinutes(hhmm: string | null | undefined): number {
     return h * 60 + m;
   }
   return 480;
+}
+
+function escapeTooltipText(value: string | null | undefined) {
+  return (value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+}
+
+function formatLongitude(value: number) {
+  const normalized = ((value + 540) % 360) - 180;
+  return Math.abs(normalized).toFixed(2) + "°" + (normalized < 0 ? "W" : "E");
 }
 
 function interpolateCurvedPosition(
@@ -141,9 +156,8 @@ export default function FlightRadarMap({
   onToggleAutoPoll,
   apiMode,
   totalMatchedCount,
-  totalStoredInDb,
-  airportClusterMap = {},
-  selectedClusterId = null,
+  routeClusterMap,
+  selectedClusterId,
 }: FlightRadarMapProps) {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapInstanceRef = useRef<LType.Map | null>(null);
@@ -157,7 +171,8 @@ export default function FlightRadarMap({
       {
         marker: LType.Marker;
         enriched: EnrichedFlight;
-        lastAngle: number;
+        timeline: FlightTimeline;
+        progress: number;
       }
     >
   >(new Map());
@@ -167,7 +182,9 @@ export default function FlightRadarMap({
   const [mapReady, setMapReady] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [speedMultiplier, setSpeedMultiplier] = useState<1 | 3 | 6>(1);
-  const [colorMode, setColorMode] = useState<"status" | "cluster" | "flightaware">("status");
+  const [preferredColorMode, setColorMode] = useState<"status" | "cluster" | "flightaware">("status");
+  const colorMode = selectedClusterId === null ? preferredColorMode : "cluster";
+  const fittedCluster = useRef<number | null>(null);
   const [mapStyle, setMapStyle] = useState<MapStyleMode>("satellite");
   const [showAirportLabels, setShowAirportLabels] = useState(true);
   const [liveProgress, setLiveProgress] = useState<number>(0.5);
@@ -178,23 +195,20 @@ export default function FlightRadarMap({
   });
 
   const animClockRef = useRef<number>(0);
+  const flightTimelinesRef = useRef(new Map<string, FlightTimeline>());
   const lastFrameTimeRef = useRef<number | null>(null);
 
   const enrichedFlights = useMemo<EnrichedFlight[]>(() => {
     const list: EnrichedFlight[] = [];
     for (const f of flights) {
-      const originCoord = US_AIRPORT_COORDS[f.origin];
-      const destCoord = US_AIRPORT_COORDS[f.dest];
-      if (!originCoord || !destCoord) continue;
+      if (selectedClusterId !== null && routeClusterMap[flightRouteKey(f)]?.cluster_id !== selectedClusterId) continue;
+      const originCoord = f.origin_coordinate ?? US_AIRPORT_COORDS[f.origin];
+      const destination = f.dest_coordinate ?? US_AIRPORT_COORDS[f.dest];
+      if (!originCoord || !destination) continue;
+      const longitudeDelta = ((destination.lon - originCoord.lon + 540) % 360) - 180;
+      const destCoord = { ...destination, lon: originCoord.lon + longitudeDelta };
       if (f.origin === f.dest) continue;
 
-      if (selectedClusterId !== null && selectedClusterId !== undefined) {
-        const oCluster = airportClusterMap[f.origin]?.cluster_id;
-        const dCluster = airportClusterMap[f.dest]?.cluster_id;
-        if (oCluster !== selectedClusterId && dCluster !== selectedClusterId) {
-          continue;
-        }
-      }
 
       const depMinutes = parseTimeToMinutes(f.crs_dep_time);
       const arrMinutes = parseTimeToMinutes(f.crs_arr_time);
@@ -213,10 +227,10 @@ export default function FlightRadarMap({
         depMinutes,
         arrMinutes,
       });
-      if (list.length >= 250) break;
+      if (list.length >= 300) break;
     }
     return list;
-  }, [flights, selectedClusterId, airportClusterMap]);
+  }, [flights, routeClusterMap, selectedClusterId]);
 
   const activeAirports = useMemo(() => {
     const map = new Map<
@@ -266,6 +280,26 @@ export default function FlightRadarMap({
   );
 
   useEffect(() => {
+    if (selectedClusterId === null) {
+      fittedCluster.current = null;
+      return;
+    }
+    const map = mapInstanceRef.current;
+    if (mapReady && map && enrichedFlights.length && fittedCluster.current !== selectedClusterId) {
+      const points = enrichedFlights.flatMap(({ originCoord, destCoord }) =>
+        buildCurvePoints(originCoord.lat, originCoord.lon, destCoord.lat, destCoord.lon, 1, 0, 8));
+      map.fitBounds(points, { padding: [35, 35], maxZoom: 7, animate: false });
+      fittedCluster.current = selectedClusterId;
+    }
+  }, [enrichedFlights, mapReady, selectedClusterId]);
+
+  const selectedRouteCluster = selectedEnriched ? routeClusterMap[flightRouteKey(selectedEnriched.item)] : undefined;
+  const visibleClusters = Array.from(new Map(enrichedFlights.flatMap(({ item }) => {
+    const route = routeClusterMap[flightRouteKey(item)];
+    return route ? [[route.cluster_id, route] as const] : [];
+  })).values()).sort((a, b) => a.cluster_id - b.cluster_id);
+
+  useEffect(() => {
     let mounted = true;
 
     async function initMap() {
@@ -286,7 +320,7 @@ export default function FlightRadarMap({
       const map = L.map(mapContainerRef.current, {
         center: [37.8, -96.0],
         zoom: 4,
-        minZoom: 3,
+        minZoom: 1,
         maxZoom: 10,
         zoomControl: false,
         attributionControl: true,
@@ -364,15 +398,8 @@ export default function FlightRadarMap({
     for (const ap of activeAirports) {
       const totalOps = ap.departures + ap.arrivals;
       const delayRatio = totalOps > 0 ? ap.delayedCount / totalOps : 0;
-      const clusterInfo = airportClusterMap[ap.code];
-
-      let dotColor = "#10b981";
-      if (colorMode === "cluster" && clusterInfo) {
-        dotColor = CLUSTER_COLORS[clusterInfo.cluster_id] || "#38bdf8";
-      } else {
-        if (delayRatio >= 0.5) dotColor = "#a855f7";
-        else if (ap.departures === 0) dotColor = "#ffffff";
-      }
+      const dotColor = colorMode === "cluster" || ap.departures === 0
+        ? "#ffffff" : delayRatio >= 0.5 ? "#a855f7" : "#10b981";
 
       const iconHtml = `
         <div class="fa-airport-node">
@@ -393,15 +420,11 @@ export default function FlightRadarMap({
         zIndexOffset: 100,
       });
 
-      const clusterLine = clusterInfo
-        ? `<br/><span style="color:#93c5fd;">K-Means: <b>Cụm ${clusterInfo.cluster_id} (${clusterInfo.short_label})</b></span>`
-        : "";
-
       marker.bindTooltip(
         `<div style="font-size:11px;line-height:1.45;">
-          <strong>${ap.code} · ${ap.coord.name}</strong><br/>
-          <span>Thành phố: ${ap.coord.city}</span><br/>
-          <span>Khởi hành: <b>${ap.departures}</b> · Hạ cánh: <b>${ap.arrivals}</b></span>${clusterLine}
+          <strong>${ap.code} · ${escapeTooltipText(ap.coord.name)}</strong><br/>
+          <span>Thành phố: ${escapeTooltipText(ap.coord.city)}</span><br/>
+          <span>Khởi hành: <b>${ap.departures}</b> · Hạ cánh: <b>${ap.arrivals}</b></span>
         </div>`,
         { direction: "top", offset: [0, -6], className: "fa-map-tooltip" }
       );
@@ -414,7 +437,7 @@ export default function FlightRadarMap({
 
       marker.addTo(group);
     }
-  }, [activeAirports, showAirportLabels, onQuickFilterAirport, mapReady, colorMode, airportClusterMap]);
+  }, [activeAirports, showAirportLabels, onQuickFilterAirport, mapReady, colorMode]);
 
   useEffect(() => {
     const L = leafletRef.current;
@@ -436,7 +459,11 @@ export default function FlightRadarMap({
     for (const ef of enrichedFlights) {
       const key = ef.item.flight_key;
       const isSelected = key === selectedFlightKey;
-      const progress = (ef.initialProgress + nowSec / ef.durationSec) % 1;
+      const timeline = flightTimelinesRef.current.get(key) ?? {
+        startedAt: nowSec, initialProgress: ef.initialProgress, durationSec: ef.durationSec,
+      };
+      flightTimelinesRef.current.set(key, timeline);
+      const progress = simulatedProgress(timeline, nowSec);
       const pos = interpolateCurvedPosition(
         ef.originCoord.lat,
         ef.originCoord.lon,
@@ -444,31 +471,43 @@ export default function FlightRadarMap({
         ef.destCoord.lon,
         progress
       );
-
-      let planeColor = "#f3c165";
       if (isSelected) {
+        setLiveProgress(progress);
+        setLiveCoords(pos);
+      }
+
+      const routeCluster = routeClusterMap[flightRouteKey(ef.item)];
+      let planeColor = "#f3c165";
+      if (colorMode === "cluster") {
+        planeColor = routeCluster ? CLUSTER_COLORS[routeCluster.cluster_id] ?? "#94a3b8" : "#94a3b8";
+      } else if (isSelected) {
         planeColor = "#38bdf8";
       } else if (colorMode === "status") {
         if (ef.item.delay_status === "severe_delay") planeColor = "#f87171";
         else if (ef.item.delay_status === "moderate_delay") planeColor = "#fbbf24";
         else planeColor = "#34d399";
-      } else if (colorMode === "cluster") {
-        const oCluster = airportClusterMap[ef.item.origin]?.cluster_id;
-        planeColor = oCluster !== undefined ? CLUSTER_COLORS[oCluster] || "#f3c165" : "#f3c165";
       }
 
       const size = isSelected ? 28 : 21;
       const svgHtml = `
-        <div class="fa-plane-rotator ${isSelected ? "selected" : ""}" style="transform: rotate(${pos.bearing.toFixed(1)}deg); color: ${planeColor};">
+        <div class="fa-plane-rotator ${isSelected ? "selected" : ""}" data-simulation-state="${progress >= 1 ? "arrived" : "flying"}" style="transform: rotate(${pos.bearing.toFixed(1)}deg); color: ${planeColor};">
           <svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="currentColor" stroke="#08142c" stroke-width="1">
             <path d="M21 16v-2l-8-5V3.5c0-.83-.67-1.5-1.5-1.5S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z"/>
           </svg>
         </div>
       `;
 
+      const tooltip = `<div style="font-size:11px;line-height:1.45;">
+        <strong>${escapeTooltipText(ef.item.flight_code)}</strong> (${escapeTooltipText(ef.item.carrier_name)})<br/>
+        <span><b>${escapeTooltipText(ef.item.origin)}</b> → <b>${escapeTooltipText(ef.item.dest)}</b></span><br/>
+        <span>Độ trễ: <b>${ef.item.delay_minutes == null ? "Chưa biết" : `${ef.item.delay_minutes}p`}</b></span>
+        ${routeCluster ? `<br/>Cụm tuyến: <b>${routeCluster.cluster_id} · ${escapeTooltipText(routeCluster.short_label)}</b>` : ""}
+      </div>`;
+
       const existing = currentMarkers.get(key);
       if (existing) {
         existing.enriched = ef;
+        existing.progress = progress;
         existing.marker.setLatLng([pos.lat, pos.lon]);
         existing.marker.setZIndexOffset(isSelected ? 2000 : 600);
         const icon = L.divIcon({
@@ -478,6 +517,7 @@ export default function FlightRadarMap({
           iconAnchor: [size / 2, size / 2],
         });
         existing.marker.setIcon(icon);
+        existing.marker.setTooltipContent(tooltip);
       } else {
         const icon = L.divIcon({
           html: svgHtml,
@@ -491,16 +531,7 @@ export default function FlightRadarMap({
           zIndexOffset: isSelected ? 2000 : 600,
         });
 
-        const oClusterInfo = airportClusterMap[ef.item.origin];
-        marker.bindTooltip(
-          `<div style="font-size:11px;line-height:1.45;">
-            <strong>${ef.item.flight_code}</strong> (${ef.item.carrier_name})<br/>
-            <span><b>${ef.item.origin}</b> → <b>${ef.item.dest}</b> · Tail: ${ef.item.tail_num || "N/A"}</span><br/>
-            <span>Giờ: ${ef.item.crs_dep_time} → ${ef.item.crs_arr_time} · Delay: <b>${ef.item.delay_minutes == null ? "Chưa biết" : `${ef.item.delay_minutes}p`}</b></span>
-            ${oClusterInfo ? `<br/><span style="color:#93c5fd;">Sân bay đi thuộc: <b>Cụm ${oClusterInfo.cluster_id} (${oClusterInfo.short_label})</b></span>` : ""}
-          </div>`,
-          { direction: "top", offset: [0, -10], className: "fa-map-tooltip" }
-        );
+        marker.bindTooltip(tooltip, { direction: "top", offset: [0, -10], className: "fa-map-tooltip" });
 
         marker.on("click", () => {
           onSelectFlight(ef.item);
@@ -510,11 +541,12 @@ export default function FlightRadarMap({
         currentMarkers.set(key, {
           marker,
           enriched: ef,
-          lastAngle: pos.bearing,
+          timeline,
+          progress,
         });
       }
     }
-  }, [enrichedFlights, selectedFlightKey, colorMode, onSelectFlight, mapReady, airportClusterMap]);
+  }, [enrichedFlights, selectedFlightKey, colorMode, onSelectFlight, mapReady, routeClusterMap]);
 
   useEffect(() => {
     let rafId: number;
@@ -537,7 +569,9 @@ export default function FlightRadarMap({
 
         for (const [key, entry] of planeMarkersRef.current.entries()) {
           const { marker, enriched } = entry;
-          const progress = (enriched.initialProgress + nowSec / enriched.durationSec) % 1;
+          const progress = simulatedProgress(entry.timeline, nowSec);
+          if (progress === entry.progress) continue;
+          entry.progress = progress;
           const pos = interpolateCurvedPosition(
             enriched.originCoord.lat,
             enriched.originCoord.lon,
@@ -553,6 +587,7 @@ export default function FlightRadarMap({
             const rotator = el.querySelector(".fa-plane-rotator") as HTMLElement | null;
             if (rotator) {
               rotator.style.transform = `rotate(${pos.bearing.toFixed(1)}deg)`;
+              if (progress === 1) rotator.dataset.simulationState = "arrived";
             }
           }
 
@@ -604,12 +639,14 @@ export default function FlightRadarMap({
       opacity: 0.95,
     }).addTo(routeGroup);
 
-    L.polyline(remainingPts, {
-      color: "#f3c165",
-      weight: 2,
-      opacity: 0.75,
-      dashArray: "6 6",
-    }).addTo(routeGroup);
+    if (liveProgress < 1) {
+      L.polyline(remainingPts, {
+        color: "#f3c165",
+        weight: 2,
+        opacity: 0.75,
+        dashArray: "6 6",
+      }).addTo(routeGroup);
+    }
   }, [selectedEnriched, liveProgress, mapReady]);
 
   function resetUSBounds() {
@@ -629,7 +666,9 @@ export default function FlightRadarMap({
             </span>
           </div>
           <p>
-            Giám sát vị trí và hành trình của {number(totalStoredInDb ?? totalMatchedCount)} chuyến bay theo thời gian thực
+            Vẽ {number(enrichedFlights.length)} / {number(totalMatchedCount)} chuyến khớp bộ lọc (tối đa 300).
+            Vị trí mô phỏng theo lịch bay.
+            {flights.length > enrichedFlights.length && " Một số chuyến chưa đủ tọa độ để vẽ."}
           </p>
         </div>
 
@@ -666,17 +705,23 @@ export default function FlightRadarMap({
             ))}
           </div>
 
-          <CustomSelect
-            ariaLabel="Chế độ màu máy bay"
-            size="compact"
-            value={colorMode}
-            onChange={val => setColorMode(val as "status" | "cluster" | "flightaware")}
-            options={[
-              { value: "status", label: "Màu: Trạng thái Delay" },
-              { value: "cluster", label: "Màu: Cụm K-Means" },
-              { value: "flightaware", label: "Màu: Vàng FlightAware" },
-            ]}
-          />
+          {selectedClusterId === null ? (
+            <CustomSelect
+              ariaLabel="Chế độ màu máy bay"
+              size="compact"
+              value={colorMode}
+              onChange={val => setColorMode(val as "status" | "cluster" | "flightaware")}
+              options={[
+                { value: "status", label: "Màu: Trạng thái Delay" },
+                { value: "cluster", label: "Màu: Cụm K-Means" },
+                { value: "flightaware", label: "Màu: Vàng FlightAware" },
+              ]}
+            />
+          ) : (
+            <span className="fa-ctrl-btn" style={{ color: CLUSTER_COLORS[selectedClusterId] }}>
+              Màu: Cụm {selectedClusterId}
+            </span>
+          )}
 
           <CustomSelect
             ariaLabel="Nền bản đồ"
@@ -738,7 +783,7 @@ export default function FlightRadarMap({
                 <small>CRS Đi: {selectedEnriched.item.crs_dep_time}</small>
               </div>
               <div className="fa-hud-plane-divider">
-                <span>✈ {(liveProgress * 100).toFixed(0)}%</span>
+                <span>{liveProgress >= 1 ? "Đã đến · mô phỏng" : `✈ ${Math.floor(liveProgress * 100)}%`}</span>
                 <div className="fa-hud-progress-track">
                   <div style={{ width: `${Math.min(100, Math.max(4, liveProgress * 100))}%` }} />
                 </div>
@@ -757,7 +802,7 @@ export default function FlightRadarMap({
               <div>
                 <span>VĨ ĐỘ / KINH ĐỘ</span>
                 <strong>
-                  {liveCoords.lat.toFixed(2)}°N, {Math.abs(liveCoords.lon).toFixed(2)}°W
+                  {Math.abs(liveCoords.lat).toFixed(2)}°{liveCoords.lat < 0 ? "S" : "N"}, {formatLongitude(liveCoords.lon)}
                 </strong>
               </div>
               <div>
@@ -779,12 +824,11 @@ export default function FlightRadarMap({
                   {selectedEnriched.item.delay_minutes == null ? "Chưa biết" : `${selectedEnriched.item.delay_minutes}p`} ({statusLabels[selectedEnriched.item.delay_status]})
                 </strong>
               </div>
-              {airportClusterMap[selectedEnriched.item.origin] && (
+              {selectedRouteCluster && (
                 <div>
-                  <span>PHÂN CỤM K-MEANS ({selectedEnriched.item.origin})</span>
-                  <strong style={{ color: "#93c5fd" }}>
-                    Cụm {airportClusterMap[selectedEnriched.item.origin].cluster_id} ·{" "}
-                    {airportClusterMap[selectedEnriched.item.origin].short_label}
+                  <span>CỤM K-MEANS (TUYẾN BAY)</span>
+                  <strong style={{ color: CLUSTER_COLORS[selectedRouteCluster.cluster_id] }}>
+                    Cụm {selectedRouteCluster.cluster_id} · {selectedRouteCluster.short_label}
                   </strong>
                 </div>
               )}
@@ -796,24 +840,12 @@ export default function FlightRadarMap({
       {/* Thanh chú thích đặt gọn gàng ở chân Card Bản đồ (không bao giờ đè lên bản đồ hay nổi lên trên Header) */}
       <div className="fa-map-footer-bar">
         {colorMode === "cluster" ? (
-          <>
-            <div className="fa-legend-item">
-              <span className="fa-legend-dot" style={{ background: "#ef4444" }} />
-              <span>Cụm 0: Mega-Hub</span>
+          visibleClusters.map(cluster => (
+            <div className="fa-legend-item" key={cluster.cluster_id}>
+              <span className="fa-legend-dot" style={{ background: CLUSTER_COLORS[cluster.cluster_id] }} />
+              <span>Cụm {cluster.cluster_id}: {cluster.short_label}</span>
             </div>
-            <div className="fa-legend-item">
-              <span className="fa-legend-dot" style={{ background: "#f59e0b" }} />
-              <span>Cụm 1: Đường dài (Long-Haul)</span>
-            </div>
-            <div className="fa-legend-item">
-              <span className="fa-legend-dot" style={{ background: "#3b82f6" }} />
-              <span>Cụm 2: Khu vực tầm trung</span>
-            </div>
-            <div className="fa-legend-item">
-              <span className="fa-legend-dot" style={{ background: "#10b981" }} />
-              <span>Cụm 3: Ổn định đúng giờ</span>
-            </div>
-          </>
+          ))
         ) : (
           <>
             <div className="fa-legend-item">

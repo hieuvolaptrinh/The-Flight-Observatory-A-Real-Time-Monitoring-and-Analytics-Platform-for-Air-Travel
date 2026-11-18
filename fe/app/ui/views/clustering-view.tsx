@@ -15,7 +15,6 @@ interface ClusteringViewProps {
   clusteringMeta: ClusteringMeta | null;
   clusterEntityType: "airport" | "route";
   setClusterEntityType: (type: "airport" | "route") => void;
-  fetchClusteringResults: (type: "airport" | "route") => void;
   clusterAssignments: ClusterAssignment[];
   selectedClusterId: number | null;
   setSelectedClusterId: (id: number | null) => void;
@@ -26,7 +25,6 @@ export function ClusteringView({
   clusteringMeta,
   clusterEntityType,
   setClusterEntityType,
-  fetchClusteringResults,
   clusterAssignments,
   selectedClusterId,
   setSelectedClusterId,
@@ -35,11 +33,12 @@ export function ClusteringView({
   const [currentPage, setCurrentPage] = useState(1);
   const pageSize = 12;
 
+  const entities = clusterAssignments.filter(item => item.entity_type === clusterEntityType);
   const filteredAssignments = useMemo(() => {
     return clusterAssignments.filter(
-      a => selectedClusterId === null || a.cluster_id === selectedClusterId
+      a => a.entity_type === clusterEntityType && (selectedClusterId === null || a.cluster_id === selectedClusterId)
     );
-  }, [clusterAssignments, selectedClusterId]);
+  }, [clusterAssignments, clusterEntityType, selectedClusterId]);
 
   // Reset to first page when entity type, cluster filter, or data length changes
   useEffect(() => {
@@ -73,6 +72,10 @@ export function ClusteringView({
 
   return (
     <>
+      {!clusteringMeta && <p className="analytics-empty" role="status">Chưa có kết quả lưu trong DB. Chạy K-Means để xử lý các chuyến đủ dữ liệu.</p>}
+      {clusteringMeta?.total_airports === 1 && (
+        <p className="analytics-status">Dữ liệu đủ điều kiện hiện chỉ có một sân bay xuất phát. Chọn Tuyến bay để xem kết quả theo từng chặng.</p>
+      )}
       <section className="metrics" aria-label="Chỉ số phân cụm K-Means">
         <Metric
           title="Thuật toán Phân cụm"
@@ -123,7 +126,7 @@ export function ClusteringView({
                 className={clusterEntityType === "airport" ? "selected" : ""}
                 onClick={() => {
                   setClusterEntityType("airport");
-                  fetchClusteringResults("airport");
+                  setSelectedClusterId(null);
                 }}
               >
                 Sân bay ({clusteringMeta?.total_airports ?? 0})
@@ -133,7 +136,7 @@ export function ClusteringView({
                 className={clusterEntityType === "route" ? "selected" : ""}
                 onClick={() => {
                   setClusterEntityType("route");
-                  fetchClusteringResults("route");
+                  setSelectedClusterId(null);
                 }}
               >
                 Tuyến bay ({clusteringMeta?.total_routes ?? 0})
@@ -142,7 +145,7 @@ export function ClusteringView({
           </div>
           <div style={{ padding: "0 0 16px" }}>
             <PcaScatterChart
-              items={clusterAssignments}
+              items={entities}
               selectedClusterId={selectedClusterId}
               selectedEntityCode={null}
               height={310}
@@ -153,7 +156,7 @@ export function ClusteringView({
         <section className="panel">
           <div className="panel-heading">
             <div>
-              <h2>4 Nhóm Đặc trưng Vận hành &amp; Ý nghĩa Nghiệp vụ</h2>
+              <h2>Nhóm đặc trưng vận hành</h2>
               <p>Chọn từng nhóm để xem chi tiết danh sách bên dưới</p>
             </div>
             {selectedClusterId !== null && (
@@ -168,6 +171,8 @@ export function ClusteringView({
           </div>
           <div className="centroid-detail-list">
             {centroids.map(c => {
+              const count = entities.filter(item => item.cluster_id === c.cluster_id).length;
+              if (!count) return null;
               const active = selectedClusterId === c.cluster_id;
               const color = CLUSTER_COLORS[c.cluster_id] || c.color_code;
               return (
@@ -180,14 +185,14 @@ export function ClusteringView({
                     <span className="cluster-color-dot" style={{ background: color }} />
                     <strong>{c.cluster_name}</strong>
                     <span className="cluster-count-badge">
-                      {c.entity_count} thực thể ({c.share_pct.toFixed(1)}%)
+                      {count} {clusterEntityType === "airport" ? "sân bay" : "tuyến"} ({(count * 100 / entities.length).toFixed(1)}%)
                     </span>
                   </div>
                   <p>{c.interpretation}</p>
                   <div className="centroid-stat-row">
                     <span>Chuyến TB: <b>{c.avg_flights.toFixed(1)}</b></span>
                     <span>Cự ly TB: <b>{Math.round(c.avg_distance)} dặm</b></span>
-                    <span>Trễ TB: <b>+{c.avg_delay_minutes.toFixed(1)}p</b></span>
+                    <span>Trễ TB: <b>{c.avg_delay_minutes.toFixed(1)}p</b></span>
                     <span>Tỷ lệ trễ: <b>{c.delay_rate_pct.toFixed(1)}%</b></span>
                   </div>
                 </article>

@@ -212,7 +212,11 @@ class ClusteringRepository:
     ) -> dict[str, Any]:
         """Read latest clustering run, centroids, and entity assignments from DB."""
         ph = "%s" if self.is_postgres else "?"
-        run_sql = "SELECT * FROM clustering_runs ORDER BY created_at DESC LIMIT 1"
+        run_sql = "SELECT * FROM clustering_runs ORDER BY created_at DESC, run_id DESC LIMIT 1"
+        routes_sql = (
+            f"SELECT cluster_id, COUNT(*) AS n FROM cluster_assignments WHERE run_id = {ph} "
+            "AND entity_type = 'route' GROUP BY cluster_id"
+        )
 
         if self.is_postgres:
             with self._connect_postgres() as conn:
@@ -239,6 +243,8 @@ class ClusteringRepository:
                         assign_params,
                     )
                     assign_rows = [dict(r) for r in cur.fetchall()]
+                    cur.execute(routes_sql, (run_id,))
+                    route_counts = {row["cluster_id"]: row["n"] for row in cur.fetchall()}
         else:
             with self._connect_sqlite() as conn:
                 cur = conn.cursor()
@@ -264,6 +270,8 @@ class ClusteringRepository:
                     assign_params,
                 )
                 assign_rows = [dict(r) for r in cur.fetchall()]
+                cur.execute(routes_sql, (run_id,))
+                route_counts = {row["cluster_id"]: row["n"] for row in cur.fetchall()}
 
         centroids_parsed = []
         for c in centroid_rows:
@@ -292,6 +300,7 @@ class ClusteringRepository:
             "inertia": run_dict["inertia"],
             "total_airports": run_dict["total_airports"],
             "total_routes": run_dict["total_routes"],
+            "route_cluster_counts": route_counts,
             "source_flights_count": run_dict["source_flights_count"],
             "centroids": centroids_parsed,
             "feature_columns": [

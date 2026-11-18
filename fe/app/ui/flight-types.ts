@@ -1,3 +1,5 @@
+import type { AirportCoord } from "./us-airports";
+
 // Type definitions for flight items (ingested_flights), server-side SQL metadata, and clustering/prediction schemas
 
 export const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:2002/api";
@@ -32,6 +34,8 @@ export interface FlightItem {
   origin: string;
   dest: string;
   route: string;
+  origin_coordinate?: AirportCoord | null;
+  dest_coordinate?: AirportCoord | null;
   crs_dep_time: string;
   crs_arr_time: string | null;
   crs_elapsed_time: number | null;
@@ -47,7 +51,26 @@ export interface FlightItem {
   ingested_at: string;
 }
 
+export interface HourlyFlightStat {
+  hour: number;
+  flights: number;
+  known: number;
+  delayed: number;
+}
+
+interface FlightGroupStat {
+  code: string;
+  name?: string;
+  flight_count: number;
+  known_count: number;
+  delayed_count: number;
+  avg_delay: number | null;
+}
+
 export interface ServerFlightMeta {
+  hourly?: HourlyFlightStat[];
+  airport_stats?: FlightGroupStat[];
+  carrier_stats?: FlightGroupStat[];
   unknown_delay_count?: number;
   provider_status?: { state: string; checked_at?: string; warnings: string[] };
   first_flight_date?: string | null;
@@ -138,6 +161,7 @@ export interface ClusteringMeta {
   inertia: number;
   total_airports: number;
   total_routes: number;
+  route_cluster_counts?: Record<number, number>;
   source_flights_count: number;
   centroids: ClusterCentroid[];
 }
@@ -147,7 +171,7 @@ export interface AirportStat {
   name: string;
   city: string;
   flights: number;
-  rate: number;
+  rate: number | null;
   delay: number;
 }
 
@@ -155,7 +179,7 @@ export interface CarrierStat {
   code: string;
   name: string;
   flights: number;
-  rate: number;
+  rate: number | null;
 }
 
 export interface PredictionItem {
@@ -236,4 +260,9 @@ export const number = (value: number) => new Intl.NumberFormat("vi-VN").format(v
 export function flightDateRange(first: string, last: string) {
   const format = (date: string) => date.split("-").reverse().join("/");
   return first === last ? format(first) : format(first) + " – " + format(last);
+}
+
+
+export function flightRouteKey(flight: Pick<FlightItem, "origin" | "dest">) {
+  return `${flight.origin} → ${flight.dest}`;
 }

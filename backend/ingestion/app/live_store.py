@@ -12,6 +12,10 @@ CREATE TABLE IF NOT EXISTS provider_usage (
     quota_group TEXT NOT NULL, period TEXT NOT NULL, requests INTEGER NOT NULL,
     PRIMARY KEY (quota_group, period)
 );
+CREATE TABLE IF NOT EXISTS provider_poll_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    last_started_epoch DOUBLE PRECISION NOT NULL
+);
 CREATE TABLE IF NOT EXISTS airport_weather (
     airport_code TEXT NOT NULL, observed_at TEXT NOT NULL, fetched_at TEXT NOT NULL,
     temperature_c REAL, wind_speed_kmh REAL, wind_gust_kmh REAL,
@@ -68,7 +72,27 @@ class LiveStore:
                         conn.execute(statement)
                 if not any(row["name"] == "updated_count" for row in conn.execute("PRAGMA table_info(ingestion_batches)")):
                     conn.execute("ALTER TABLE ingestion_batches ADD COLUMN updated_count INTEGER NOT NULL DEFAULT 0")
+            # Carry the last poll forward when upgrading an existing database.
+            row = conn.execute("SELECT payload FROM provider_cache WHERE cache_key='ingestion_status'").fetchone()
+            checked_at = json.loads(row["payload"]).get("checked_at") if row else None
+            last_started = datetime.fromisoformat(checked_at).timestamp() if checked_at else 0
+            conn.execute(self.sql("""INSERT INTO provider_poll_state (id, last_started_epoch) VALUES (1, ?)
+                ON CONFLICT (id) DO NOTHING"""), (last_started,))
             conn.commit()
+
+    def reserve_poll(self, interval_seconds: float, now: datetime | None = None) -> float:
+        """Claim a poll across processes, or return the seconds until another claim is allowed."""
+        epoch = (now or datetime.now(timezone.utc)).timestamp()
+        with self.connect() as conn:
+            started = conn.execute(self.sql("""
+                UPDATE provider_poll_state SET last_started_epoch = ?
+                WHERE id = 1 AND last_started_epoch <= ? RETURNING last_started_epoch
+            """), (epoch, epoch - interval_seconds)).fetchone()
+            if started is not None:
+                conn.commit()
+                return 0
+            row = conn.execute("SELECT last_started_epoch FROM provider_poll_state WHERE id = 1").fetchone()
+            return row["last_started_epoch"] + interval_seconds - epoch
 
     def cached(self, key):
         with self.connect() as conn:

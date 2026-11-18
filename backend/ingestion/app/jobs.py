@@ -40,6 +40,9 @@ class JobRunner:
         sort: str | None = "time",
         limit: int = 200,
         offset: int = 0,
+        source: str = "all",
+        cluster_id: int | None = None,
+        include_overview: bool = False,
     ) -> Results:
         queried = self.pipeline.repository.query_flights(
             origin=origin,
@@ -50,6 +53,9 @@ class JobRunner:
             sort=sort,
             limit=limit,
             offset=offset,
+            source=source,
+            cluster_id=cluster_id,
+            include_overview=include_overview,
         )
         return Results(
             service=self.service,
@@ -94,9 +100,20 @@ class JobRunner:
             return job
 
     async def schedule(self, interval_seconds: float, run_on_startup: bool = True) -> None:
-        if not run_on_startup:
-            await self.wait_for_next_run(interval_seconds)
+        delay = 0 if run_on_startup else interval_seconds
+        loop = asyncio.get_running_loop()
         while True:
+            if delay > 0:
+                await self.wait_for_next_run(delay)
+            started_at = loop.time()
+            try:
+                delay = await asyncio.to_thread(self.pipeline.providers.store.reserve_poll, interval_seconds)
+            except Exception:
+                logger.exception("Could not reserve scheduled provider poll: service=%s", self.service)
+                delay = interval_seconds
+                continue
+            if delay > 0:
+                continue
             try:
                 await self.run_once(trigger="schedule")
             except JobAlreadyRunning:
@@ -105,4 +122,4 @@ class JobRunner:
                 logger.warning("Pipeline is not implemented: service=%s", self.service)
             except Exception:
                 pass
-            await self.wait_for_next_run(interval_seconds)
+            delay = max(0, interval_seconds - (loop.time() - started_at))

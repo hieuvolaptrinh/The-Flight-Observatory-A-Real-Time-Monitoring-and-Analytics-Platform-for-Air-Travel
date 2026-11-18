@@ -27,7 +27,7 @@ class Pipeline:
         if dates["last"] is None:
             return None
         end = dates["last"] + timedelta(days=1)
-        return max(dates["first"], end - timedelta(days=366)), end
+        return max(dates["first"], end - timedelta(days=1096)), end
 
     async def snapshot(self, date_from=None, date_to=None, *, force=False):
         async with await self.connect() as db:

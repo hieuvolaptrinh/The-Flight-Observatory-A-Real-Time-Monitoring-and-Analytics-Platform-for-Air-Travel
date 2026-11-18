@@ -34,8 +34,9 @@ class Settings(BaseModel):
     run_on_startup: bool = Field(default_factory=lambda: _env_bool("RUN_ON_STARTUP", True))
     job_interval_seconds: float = Field(
         default_factory=lambda: float(os.getenv("JOB_INTERVAL_SECONDS", "300")),
-        gt=0,
+        ge=300,
         allow_inf_nan=False,
+        validate_default=True,
     )
     database_url: str = Field(default_factory=lambda: os.getenv("DATABASE_URL") or _DEFAULT_DB)
     trigger_downstream_urls: str = Field(

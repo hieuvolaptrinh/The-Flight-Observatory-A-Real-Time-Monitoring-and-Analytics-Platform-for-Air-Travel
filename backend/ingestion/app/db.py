@@ -115,7 +115,7 @@ ON CONFLICT (flight_key) DO UPDATE SET
     fetched_at=excluded.fetched_at, ingested_at=excluded.ingested_at
 """
 
-PG_STATS_SQL = """
+STATS_SELECT = """
 SELECT
     COUNT(*) AS filtered_count,
     COUNT(delay_minutes) AS known_delay_count,
@@ -129,211 +129,26 @@ SELECT
     MAX(ingested_at) AS latest_ingested_at,
     MIN(fl_date) AS first_flight_date,
     MAX(fl_date) AS last_flight_date
-FROM ingested_flights
-WHERE (%(origin)s::text IS NULL OR origin = %(origin)s)
-  AND (%(dest)s::text IS NULL OR dest = %(dest)s)
-  AND (%(carrier)s::text IS NULL OR op_unique_carrier = %(carrier)s)
-  AND (%(status)s::text IS NULL OR delay_status = %(status)s)
-  AND (
-      %(search)s::text IS NULL
-      OR UPPER(flight_code) LIKE %(search)s
-      OR UPPER(origin) LIKE %(search)s
-      OR UPPER(dest) LIKE %(search)s
-      OR UPPER(COALESCE(tail_num, '')) LIKE %(search)s
-      OR UPPER(COALESCE(carrier_name, '')) LIKE %(search)s
-  )
 """
 
-SQLITE_STATS_SQL = """
-SELECT
-    COUNT(*) AS filtered_count,
-    COUNT(delay_minutes) AS known_delay_count,
-    SUM(CASE WHEN is_delayed = 1 THEN 1 ELSE 0 END) AS delayed_count,
-    SUM(CASE WHEN delay_status = 'on_time' THEN 1 ELSE 0 END) AS on_time_count,
-    SUM(CASE WHEN delay_status = 'moderate_delay' THEN 1 ELSE 0 END) AS moderate_delay_count,
-    SUM(CASE WHEN delay_status = 'severe_delay' THEN 1 ELSE 0 END) AS severe_delay_count,
-    AVG(delay_minutes) AS avg_delay_minutes,
-    AVG(distance) AS avg_distance,
-    AVG(crs_elapsed_time) AS avg_elapsed_time,
-    MAX(ingested_at) AS latest_ingested_at,
-    MIN(fl_date) AS first_flight_date,
-    MAX(fl_date) AS last_flight_date
-FROM ingested_flights
-WHERE (:origin IS NULL OR origin = :origin)
-  AND (:dest IS NULL OR dest = :dest)
-  AND (:carrier IS NULL OR op_unique_carrier = :carrier)
-  AND (:status IS NULL OR delay_status = :status)
-  AND (
-      :search IS NULL
-      OR UPPER(flight_code) LIKE :search
-      OR UPPER(origin) LIKE :search
-      OR UPPER(dest) LIKE :search
-      OR UPPER(COALESCE(tail_num, '')) LIKE :search
-      OR UPPER(COALESCE(carrier_name, '')) LIKE :search
-  )
-"""
-
-PG_CARRIER_STATS_SQL = """
-SELECT
-    op_unique_carrier AS code,
-    AVG(delay_minutes) AS avg_delay,
-    COUNT(*) AS flight_count
-FROM ingested_flights
-WHERE (%(origin)s::text IS NULL OR origin = %(origin)s)
-  AND (%(dest)s::text IS NULL OR dest = %(dest)s)
-  AND (%(carrier)s::text IS NULL OR op_unique_carrier = %(carrier)s)
-  AND (%(status)s::text IS NULL OR delay_status = %(status)s)
-  AND (
-      %(search)s::text IS NULL
-      OR UPPER(flight_code) LIKE %(search)s
-      OR UPPER(origin) LIKE %(search)s
-      OR UPPER(dest) LIKE %(search)s
-      OR UPPER(COALESCE(tail_num, '')) LIKE %(search)s
-      OR UPPER(COALESCE(carrier_name, '')) LIKE %(search)s
-  )
-GROUP BY op_unique_carrier
-ORDER BY flight_count DESC, op_unique_carrier ASC
-LIMIT 8
-"""
-
-SQLITE_CARRIER_STATS_SQL = """
-SELECT
-    op_unique_carrier AS code,
-    AVG(delay_minutes) AS avg_delay,
-    COUNT(*) AS flight_count
-FROM ingested_flights
-WHERE (:origin IS NULL OR origin = :origin)
-  AND (:dest IS NULL OR dest = :dest)
-  AND (:carrier IS NULL OR op_unique_carrier = :carrier)
-  AND (:status IS NULL OR delay_status = :status)
-  AND (
-      :search IS NULL
-      OR UPPER(flight_code) LIKE :search
-      OR UPPER(origin) LIKE :search
-      OR UPPER(dest) LIKE :search
-      OR UPPER(COALESCE(tail_num, '')) LIKE :search
-      OR UPPER(COALESCE(carrier_name, '')) LIKE :search
-  )
-GROUP BY op_unique_carrier
-ORDER BY flight_count DESC, op_unique_carrier ASC
-LIMIT 8
-"""
-
-PG_ITEMS_SQL_BY_SORT: dict[str, str] = {
-    "time": """
-        SELECT * FROM ingested_flights
-        WHERE (%(origin)s::text IS NULL OR origin = %(origin)s)
-          AND (%(dest)s::text IS NULL OR dest = %(dest)s)
-          AND (%(carrier)s::text IS NULL OR op_unique_carrier = %(carrier)s)
-          AND (%(status)s::text IS NULL OR delay_status = %(status)s)
-          AND (
-              %(search)s::text IS NULL
-              OR UPPER(flight_code) LIKE %(search)s
-              OR UPPER(origin) LIKE %(search)s
-              OR UPPER(dest) LIKE %(search)s
-              OR UPPER(COALESCE(tail_num, '')) LIKE %(search)s
-              OR UPPER(COALESCE(carrier_name, '')) LIKE %(search)s
-          )
-        ORDER BY crs_dep_time ASC, ingested_at DESC
-        LIMIT %(limit)s OFFSET %(offset)s
-    """,
-    "delay": """
-        SELECT * FROM ingested_flights
-        WHERE (%(origin)s::text IS NULL OR origin = %(origin)s)
-          AND (%(dest)s::text IS NULL OR dest = %(dest)s)
-          AND (%(carrier)s::text IS NULL OR op_unique_carrier = %(carrier)s)
-          AND (%(status)s::text IS NULL OR delay_status = %(status)s)
-          AND (
-              %(search)s::text IS NULL
-              OR UPPER(flight_code) LIKE %(search)s
-              OR UPPER(origin) LIKE %(search)s
-              OR UPPER(dest) LIKE %(search)s
-              OR UPPER(COALESCE(tail_num, '')) LIKE %(search)s
-              OR UPPER(COALESCE(carrier_name, '')) LIKE %(search)s
-          )
-        ORDER BY delay_minutes DESC, crs_dep_time ASC
-        LIMIT %(limit)s OFFSET %(offset)s
-    """,
-    "distance": """
-        SELECT * FROM ingested_flights
-        WHERE (%(origin)s::text IS NULL OR origin = %(origin)s)
-          AND (%(dest)s::text IS NULL OR dest = %(dest)s)
-          AND (%(carrier)s::text IS NULL OR op_unique_carrier = %(carrier)s)
-          AND (%(status)s::text IS NULL OR delay_status = %(status)s)
-          AND (
-              %(search)s::text IS NULL
-              OR UPPER(flight_code) LIKE %(search)s
-              OR UPPER(origin) LIKE %(search)s
-              OR UPPER(dest) LIKE %(search)s
-              OR UPPER(COALESCE(tail_num, '')) LIKE %(search)s
-              OR UPPER(COALESCE(carrier_name, '')) LIKE %(search)s
-          )
-        ORDER BY distance DESC, crs_dep_time ASC
-        LIMIT %(limit)s OFFSET %(offset)s
-    """,
+FLIGHT_SORTS = {
+    "time": "fl_date DESC, crs_dep_time ASC, ingested_at DESC",
+    "delay": "delay_minutes DESC NULLS LAST, fl_date DESC, crs_dep_time ASC",
+    "distance": "distance DESC NULLS LAST, fl_date DESC, crs_dep_time ASC",
 }
 
-SQLITE_ITEMS_SQL_BY_SORT: dict[str, str] = {
-    "time": """
-        SELECT * FROM ingested_flights
-        WHERE (:origin IS NULL OR origin = :origin)
-          AND (:dest IS NULL OR dest = :dest)
-          AND (:carrier IS NULL OR op_unique_carrier = :carrier)
-          AND (:status IS NULL OR delay_status = :status)
-          AND (
-              :search IS NULL
-              OR UPPER(flight_code) LIKE :search
-              OR UPPER(origin) LIKE :search
-              OR UPPER(dest) LIKE :search
-              OR UPPER(COALESCE(tail_num, '')) LIKE :search
-              OR UPPER(COALESCE(carrier_name, '')) LIKE :search
-          )
-        ORDER BY crs_dep_time ASC, ingested_at DESC
-        LIMIT :limit OFFSET :offset
-    """,
-    "delay": """
-        SELECT * FROM ingested_flights
-        WHERE (:origin IS NULL OR origin = :origin)
-          AND (:dest IS NULL OR dest = :dest)
-          AND (:carrier IS NULL OR op_unique_carrier = :carrier)
-          AND (:status IS NULL OR delay_status = :status)
-          AND (
-              :search IS NULL
-              OR UPPER(flight_code) LIKE :search
-              OR UPPER(origin) LIKE :search
-              OR UPPER(dest) LIKE :search
-              OR UPPER(COALESCE(tail_num, '')) LIKE :search
-              OR UPPER(COALESCE(carrier_name, '')) LIKE :search
-          )
-        ORDER BY delay_minutes DESC, crs_dep_time ASC
-        LIMIT :limit OFFSET :offset
-    """,
-    "distance": """
-        SELECT * FROM ingested_flights
-        WHERE (:origin IS NULL OR origin = :origin)
-          AND (:dest IS NULL OR dest = :dest)
-          AND (:carrier IS NULL OR op_unique_carrier = :carrier)
-          AND (:status IS NULL OR delay_status = :status)
-          AND (
-              :search IS NULL
-              OR UPPER(flight_code) LIKE :search
-              OR UPPER(origin) LIKE :search
-              OR UPPER(dest) LIKE :search
-              OR UPPER(COALESCE(tail_num, '')) LIKE :search
-              OR UPPER(COALESCE(carrier_name, '')) LIKE :search
-          )
-        ORDER BY distance DESC, crs_dep_time ASC
-        LIMIT :limit OFFSET :offset
-    """,
-}
+FLIGHT_SCOPE = """
+FROM ingested_flights AS f
+LEFT JOIN live_flight_details AS live ON live.flight_key = f.flight_key
+"""
 
-TOTAL_SQL = "SELECT COUNT(*) AS total_stored FROM ingested_flights"
-LAST_BATCH_SQL = "SELECT * FROM ingestion_batches ORDER BY created_at DESC LIMIT 1"
-SQLITE_FACETS_SQL = """
-SELECT
-    (SELECT GROUP_CONCAT(DISTINCT origin) FROM ingested_flights) AS origins,
-    (SELECT GROUP_CONCAT(DISTINCT dest) FROM ingested_flights) AS dests,
-    (SELECT GROUP_CONCAT(DISTINCT op_unique_carrier) FROM ingested_flights) AS carriers
+ROUTE_CLUSTER_FILTER = """
+EXISTS (
+    SELECT 1 FROM cluster_assignments AS a
+    WHERE a.run_id = (SELECT run_id FROM clustering_runs ORDER BY created_at DESC, run_id DESC LIMIT 1)
+      AND a.entity_type = 'route' AND a.cluster_id = ?
+      AND a.entity_code = f.origin || ' → ' || f.dest
+)
 """
 
 
@@ -527,71 +342,117 @@ class FlightRepository:
         sort: str | None = "time",
         limit: int = 200,
         offset: int = 0,
+        source: str = "all",
+        cluster_id: int | None = None,
+        include_overview: bool = False,
     ) -> dict[str, Any]:
         """Query flights from DB with parameterized filters, whitelist sorting, pagination, and KPIs."""
-        filter_params: dict[str, Any] = {
-            "origin": origin.strip().upper() if (origin and origin.strip().lower() != "all") else None,
-            "dest": dest.strip().upper() if (dest and dest.strip().lower() != "all") else None,
-            "carrier": carrier.strip().upper() if (carrier and carrier.strip().lower() != "all") else None,
-            "status": status.strip() if (status and status.strip().lower() != "all") else None,
-            "search": f"%{search.strip().upper()}%" if (search and search.strip()) else None,
-        }
+        conditions = []
+        params = []
+        for column, value in (("origin", origin), ("dest", dest), ("op_unique_carrier", carrier), ("delay_status", status)):
+            if value and value.strip() and value.strip().lower() != "all":
+                conditions.append(f"f.{column} = ?")
+                params.append(value.strip() if column == "delay_status" else value.strip().upper())
+        if search and search.strip():
+            conditions.append("""(
+                UPPER(f.flight_code) LIKE ? OR UPPER(f.origin) LIKE ? OR UPPER(f.dest) LIKE ?
+                OR UPPER(COALESCE(f.tail_num, '')) LIKE ? OR UPPER(COALESCE(f.carrier_name, '')) LIKE ?
+            )""")
+            params.extend([f"%{search.strip().upper()}%"] * 5)
+
+        scope_where = ""
+        if source == "airlabs":
+            scope_where = " WHERE live.flight_key IS NOT NULL"
+        elif source == "legacy":
+            scope_where = " WHERE live.flight_key IS NULL"
 
         requested_sort = (sort or "time").strip().lower()
-        sort_key = requested_sort if requested_sort in PG_ITEMS_SQL_BY_SORT else "time"
-        items_params = {**filter_params, "limit": int(limit), "offset": int(offset)}
-
-        if self.is_postgres:
-            items_sql = PG_ITEMS_SQL_BY_SORT[sort_key]
-            with self._connect_postgres() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(TOTAL_SQL)
-                    total_stored = int(cur.fetchone()["total_stored"])
-                    cur.execute(PG_STATS_SQL, filter_params)
-                    stats_row = dict(cur.fetchone() or {})
-                    cur.execute(PG_CARRIER_STATS_SQL, filter_params)
-                    carrier_rows = [dict(r) for r in cur.fetchall()]
-                    cur.execute(items_sql, items_params)
-                    items = [dict(r) for r in cur.fetchall()]
-                    cur.execute(LAST_BATCH_SQL)
-                    last_batch = cur.fetchone()
-                    last_batch_dict = dict(last_batch) if last_batch else None
-                    cur.execute("SELECT DISTINCT origin FROM ingested_flights ORDER BY origin")
-                    origins = [r["origin"] for r in cur.fetchall() if r["origin"]]
-                    cur.execute("SELECT DISTINCT dest FROM ingested_flights ORDER BY dest")
-                    dests = [r["dest"] for r in cur.fetchall() if r["dest"]]
-                    cur.execute("SELECT DISTINCT op_unique_carrier FROM ingested_flights ORDER BY op_unique_carrier")
-                    carriers = [r["op_unique_carrier"] for r in cur.fetchall() if r["op_unique_carrier"]]
-        else:
-            items_sql = SQLITE_ITEMS_SQL_BY_SORT[sort_key]
-            with self._connect_sqlite() as conn:
-                cur = conn.cursor()
-                cur.execute(TOTAL_SQL)
-                total_stored = int(cur.fetchone()["total_stored"])
-                cur.execute(SQLITE_STATS_SQL, filter_params)
-                stats_row = dict(cur.fetchone() or {})
-                cur.execute(SQLITE_CARRIER_STATS_SQL, filter_params)
-                carrier_rows = [dict(r) for r in cur.fetchall()]
-                cur.execute(items_sql, items_params)
-                items = [dict(r) for r in cur.fetchall()]
-                cur.execute(LAST_BATCH_SQL)
-                last_batch = cur.fetchone()
-                last_batch_dict = dict(last_batch) if last_batch else None
-                cur.execute(SQLITE_FACETS_SQL)
-                facet_row = dict(cur.fetchone() or {})
-                origins = sorted((facet_row.get("origins") or "").split(",")) if facet_row.get("origins") else []
-                dests = sorted((facet_row.get("dests") or "").split(",")) if facet_row.get("dests") else []
-                carriers = sorted((facet_row.get("carriers") or "").split(",")) if facet_row.get("carriers") else []
-
+        sort_key = requested_sort if requested_sort in FLIGHT_SORTS else "time"
         store = LiveStore(self)
-        with store.connect() as connection:
-            for item in items:
-                detail = connection.execute(store.sql("SELECT payload FROM live_flight_details WHERE flight_key=?"), (item["flight_key"],)).fetchone()
-                if detail:
-                    info = json.loads(detail["payload"])
-                    item.update({k: info.get(k) for k in ("source", "flight_status", "delay_kind", "distance_source", "scheduled_dep_utc")})
-                else:
-                    item["source"] = "legacy"
+        with store.connect() as conn:
+            if self.is_postgres:
+                conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            if cluster_id is not None:
+                tables_present = self.is_postgres or conn.execute(
+                    "SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' "
+                    "AND name IN ('cluster_assignments', 'clustering_runs')"
+                ).fetchone()["n"] == 2
+                conditions.append(ROUTE_CLUSTER_FILTER if tables_present else "1 = 0")
+                if tables_present:
+                    params.append(cluster_id)
+            filtered = FLIGHT_SCOPE + scope_where
+            if conditions:
+                filtered += (" AND " if scope_where else " WHERE ") + " AND ".join(conditions)
+            total_stored = conn.execute(
+                "SELECT COUNT(*) AS total_stored " + FLIGHT_SCOPE + scope_where
+            ).fetchone()["total_stored"]
+            stats_row = dict(conn.execute(store.sql(STATS_SELECT + filtered), params).fetchone())
+            carrier_limit = "" if include_overview else " LIMIT 8"
+            carrier_rows = conn.execute(store.sql("""
+                SELECT f.op_unique_carrier AS code, MAX(f.carrier_name) AS name,
+                       AVG(f.delay_minutes) AS avg_delay, COUNT(*) AS flight_count,
+                       COUNT(f.delay_minutes) AS known_count,
+                       SUM(CASE WHEN f.is_delayed = 1 THEN 1 ELSE 0 END) AS delayed_count
+            """ + filtered + """
+                GROUP BY f.op_unique_carrier ORDER BY flight_count DESC, code
+            """ + carrier_limit), params).fetchall()
+            items = [dict(row) for row in conn.execute(store.sql(
+                "SELECT f.*, live.payload AS live_payload " + filtered
+                + f" ORDER BY {FLIGHT_SORTS[sort_key]}, f.flight_key LIMIT ? OFFSET ?"
+            ), [*params, limit, offset]).fetchall()]
+            airport_keys = sorted({f"airport:{item[side]}" for item in items for side in ("origin", "dest")})
+            coordinates = {}
+            if airport_keys:
+                placeholders = ", ".join("?" for _ in airport_keys)
+                for row in conn.execute(store.sql(
+                    f"SELECT cache_key, payload FROM provider_cache WHERE cache_key IN ({placeholders})"
+                ), airport_keys):
+                    airport = json.loads(row["payload"])
+                    try:
+                        lat, lon = float(airport["lat"]), float(airport["lng"])
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    if -90 <= lat <= 90 and -180 <= lon <= 180:
+                        code = row["cache_key"].removeprefix("airport:")
+                        coordinates[code] = {
+                            "lat": lat, "lon": lon,
+                            "name": str(airport.get("name") or code),
+                            "city": str(airport.get("city") or code),
+                        }
+            last_batch = conn.execute("SELECT * FROM ingestion_batches ORDER BY created_at DESC LIMIT 1").fetchone()
+            last_batch_dict = dict(last_batch) if last_batch else None
+            facets = [
+                [row["code"] for row in conn.execute(
+                    f"SELECT DISTINCT f.{column} AS code " + FLIGHT_SCOPE + scope_where + " ORDER BY code"
+                ).fetchall() if row["code"]]
+                for column in ("origin", "dest", "op_unique_carrier")
+            ]
+            origins, dests, carriers = facets
+            hourly = []
+            airports = []
+            if include_overview:
+                join = " AND " if " WHERE " in filtered else " WHERE "
+                hourly = [dict(row) for row in conn.execute(store.sql("""
+                    SELECT f.dep_hour AS hour, COUNT(*) AS flights, COUNT(f.delay_minutes) AS known,
+                           SUM(CASE WHEN f.is_delayed = 1 THEN 1 ELSE 0 END) AS delayed
+                """ + filtered + join + """
+                    f.fl_date = ? AND f.dep_hour BETWEEN 0 AND 23 GROUP BY f.dep_hour ORDER BY f.dep_hour
+                """), [*params, stats_row["last_flight_date"]]).fetchall()]
+                airports = [dict(row) for row in conn.execute(store.sql("""
+                    SELECT f.origin AS code, COUNT(*) AS flight_count, COUNT(f.delay_minutes) AS known_count,
+                           AVG(f.delay_minutes) AS avg_delay,
+                           SUM(CASE WHEN f.is_delayed = 1 THEN 1 ELSE 0 END) AS delayed_count
+                """ + filtered + " GROUP BY f.origin ORDER BY flight_count DESC, code"), params).fetchall()]
+
+        for item in items:
+            item["origin_coordinate"] = coordinates.get(item["origin"])
+            item["dest_coordinate"] = coordinates.get(item["dest"])
+            payload = item.pop("live_payload")
+            if payload is not None:
+                info = json.loads(payload)
+                item.update({key: info.get(key) for key in ("source", "flight_status", "delay_kind", "distance_source", "scheduled_dep_utc")})
+            else:
+                item["source"] = "legacy"
         provider_status, _ = store.cached("ingestion_status")
         filtered_count = int(stats_row.get("filtered_count") or 0)
         delayed_count = int(stats_row.get("delayed_count") or 0)
@@ -628,11 +489,15 @@ class FlightRepository:
             "carrier_delays": [
                 {
                     "code": r["code"],
-                    "avg_delay": round(float(r.get("avg_delay") or 0.0), 1),
-                    "flight_count": int(r.get("flight_count") or 0),
+                    "avg_delay": round(float(r["avg_delay"] or 0.0), 1),
+                    "flight_count": int(r["flight_count"] or 0),
                 }
-                for r in carrier_rows
+                for r in carrier_rows[:8]
             ],
+            "source": source,
+            "hourly": hourly,
+            "airport_stats": airports,
+            "carrier_stats": [dict(row) for row in carrier_rows] if include_overview else [],
             "last_batch": last_batch_dict,
             "provider_status": provider_status,
             "available_filters": {

@@ -8,6 +8,7 @@ import {
   ClusteringMeta,
   FlightItem,
   RawFlightItem,
+  flightRouteKey,
   number,
   statusBadgeClass,
   statusLabels,
@@ -42,7 +43,7 @@ interface FlightsViewProps {
   setAirport: (updater: string | ((prev: string) => string)) => void;
   autoPollEnabled: boolean;
   setAutoPollEnabled: (updater: boolean | ((prev: boolean) => boolean)) => void;
-  airportClusterMap: Record<string, ClusterAssignment>;
+  routeClusterMap: Record<string, ClusterAssignment>;
   selectedClusterId: number | null;
   setSelectedClusterId: (id: number | null) => void;
   centroids: ClusterCentroid[];
@@ -105,7 +106,7 @@ export function FlightsView({
   setAirport,
   autoPollEnabled,
   setAutoPollEnabled,
-  airportClusterMap,
+  routeClusterMap,
   selectedClusterId,
   setSelectedClusterId,
   centroids,
@@ -145,8 +146,7 @@ export function FlightsView({
           <div>
             <h2>Database hiện đang trống (chưa có dữ liệu chuyến bay).</h2>
             <p>
-              Nhấn nút &ldquo;Nạp batch mới (POST /run)&rdquo; trên thanh Header để Ingestion
-              gọi Simulator và lưu dữ liệu vào PostgreSQL.
+              Dữ liệu sẽ xuất hiện sau khi backend hoàn thành lượt nạp tự động.
             </p>
           </div>
         </section>
@@ -206,8 +206,7 @@ export function FlightsView({
             onToggleAutoPoll={() => setAutoPollEnabled(v => !v)}
             apiMode={apiMode}
             totalMatchedCount={totalFilteredCount}
-            totalStoredInDb={batchMeta?.total_stored}
-            airportClusterMap={airportClusterMap}
+            routeClusterMap={routeClusterMap}
             selectedClusterId={selectedClusterId}
           />
         </div>
@@ -217,9 +216,9 @@ export function FlightsView({
           <section className="panel side-cluster-panel">
             <div className="panel-heading compact-heading">
               <div>
-                <h2>Phân nhóm Đặc trưng Sân bay</h2>
+                <h2>Phân cụm tuyến bay</h2>
                 <p>
-                  Chọn nhóm để lọc nhanh các sân bay và máy bay trên bản đồ radar
+                  Chọn cụm để lọc bản đồ và danh sách chuyến bay.
                 </p>
               </div>
               {selectedClusterId !== null && (
@@ -233,6 +232,7 @@ export function FlightsView({
               )}
             </div>
 
+            {centroids.length === 0 && <p>Chưa có kết quả phân cụm tuyến bay.</p>}
             <div className="cluster-mini-grid">
               {centroids.map(c => {
                 const active = selectedClusterId === c.cluster_id;
@@ -251,13 +251,12 @@ export function FlightsView({
                       />
                       <strong>Cụm {c.cluster_id}</strong>
                       <span className="cluster-count-badge">
-                        {c.entity_count} SB ({c.share_pct.toFixed(0)}%)
+                        {c.entity_count} tuyến ({c.share_pct.toFixed(0)}%)
                       </span>
                     </div>
                     <div className="cluster-mini-label">{c.short_label}</div>
                     <div className="cluster-mini-metrics">
-                      <span>Trễ TB: +{c.avg_delay_minutes.toFixed(1)}p</span>
-                      <span>Tỷ lệ trễ: {c.delay_rate_pct.toFixed(1)}%</span>
+                      <span>Lọc các chuyến trên những tuyến thuộc cụm</span>
                     </div>
                   </button>
                 );
@@ -268,10 +267,10 @@ export function FlightsView({
               <PcaScatterChart
                 items={clusterAssignments}
                 selectedClusterId={selectedClusterId}
-                selectedEntityCode={airport === "all" ? null : airport}
+                selectedEntityCode={null}
                 onSelectEntity={code => {
-                  setAirport(prev => (prev === code ? "all" : code));
-                  notify(`Đã chọn sân bay ${code} từ biểu đồ phân cụm PCA 2D`);
+                  const route = clusterAssignments.find(item => item.entity_code === code);
+                  if (route) setSelectedClusterId(route.cluster_id);
                 }}
                 height={162}
               />
@@ -477,7 +476,7 @@ export function FlightsView({
                   <th>TÀU BAY (TAIL)</th>
                   <th>NGÀY BAY</th>
                   <th>HÀNH TRÌNH</th>
-                  <th>CỤM K-MEANS (SÂN BAY ĐI)</th>
+                  <th>CỤM K-MEANS (TUYẾN BAY)</th>
                   <th>GIỜ ĐI / ĐẾN (CRS)</th>
                   <th>CỰ LY / THỜI GIAN</th>
                   <th>MỨC ĐỘ DELAY</th>
@@ -488,7 +487,7 @@ export function FlightsView({
                 {paginatedFlights.map(f => {
                   const badge = statusBadgeClass[f.delay_status];
                   const isRowSelected = selectedFlightKey === f.flight_key;
-                  const oCluster = airportClusterMap[f.origin];
+                  const routeCluster = routeClusterMap[flightRouteKey(f)];
                   return (
                     <tr
                       key={f.flight_key}
@@ -517,20 +516,20 @@ export function FlightsView({
                         </span>
                       </td>
                       <td>
-                        {oCluster ? (
+                        {routeCluster ? (
                           <span
                             className="cluster-pill-tag"
                             style={{
-                              borderColor: CLUSTER_COLORS[oCluster.cluster_id] || "#38bdf8",
-                              color: CLUSTER_COLORS[oCluster.cluster_id] || "#38bdf8",
+                              borderColor: CLUSTER_COLORS[routeCluster.cluster_id] || "#38bdf8",
+                              color: CLUSTER_COLORS[routeCluster.cluster_id] || "#38bdf8",
                             }}
                           >
                             <i
                               style={{
-                                background: CLUSTER_COLORS[oCluster.cluster_id] || "#38bdf8",
+                                background: CLUSTER_COLORS[routeCluster.cluster_id] || "#38bdf8",
                               }}
                             />
-                            Cụm {oCluster.cluster_id} · {oCluster.short_label}
+                            Cụm {routeCluster.cluster_id} · {routeCluster.short_label}
                           </span>
                         ) : (
                           <span className="muted">—</span>
@@ -568,7 +567,7 @@ export function FlightsView({
               <h3>Không có chuyến bay phù hợp</h3>
               <p>
                 {apiMode !== "demo" && apiReady === false
-                  ? "Database hiện đang trống. Nhấn nút 'Nạp batch mới (POST /run)' để nạp dữ liệu từ Simulator."
+                  ? "Chưa có dữ liệu chuyến bay. Hãy đợi lượt nạp tự động."
                   : "Thử từ khóa tìm kiếm khác hoặc đặt lại bộ lọc."}
               </p>
             </div>

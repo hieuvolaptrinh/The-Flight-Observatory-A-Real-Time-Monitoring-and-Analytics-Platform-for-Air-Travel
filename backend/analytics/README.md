@@ -1,12 +1,12 @@
 # Analytics API
 
-Từ gốc repo, chạy Simulator, Ingestion, PostgreSQL và Analytics qua gateway:
+Từ gốc repo, chạy stack Docker Compose:
 
 ```powershell
 docker compose -f backend/docker-compose.yml up -d --build --wait
 ```
 
-Swagger ở `http://localhost:2002/api/analytics/docs`. Ingestion nạp 5 chuyến mỗi 300 giây theo mặc định. Có thể kiểm tra bản ghi đã lưu bằng `GET /api/ingestion/flights` hoặc nạp một lô ngay bằng `POST /api/ingestion/run`.
+Swagger ở `http://localhost:2002/api/analytics/docs`. Ingestion lấy dữ liệu nguồn theo lịch backend mỗi 300 giây mặc định. Dùng `GET /api/ingestion/flights` để đọc bản ghi đã lưu.
 
 | Phương thức và đường dẫn dưới `/api/analytics` | Kết quả |
 | --- | --- |
@@ -22,7 +22,7 @@ Swagger ở `http://localhost:2002/api/analytics/docs`. Ingestion nạp 5 chuy�
 | `GET /forecast` | Đọc số chuyến dự báo, giải thích và trạng thái sẵn sàng. |
 | `GET /classification` | Đọc nhãn lưu lượng `high` hoặc `low` của cùng dự báo. |
 
-Các endpoint danh sách hỗ trợ `limit` mặc định 5, `offset` và trả `has_more`. Line, scatter và histogram nhận `grain=day|week|month`. Trend và seasonal nhận `grain=auto|week|month`. `auto` dùng tháng khi có đủ tháng quan sát. Trend cần ít nhất 6 tháng để chọn tháng. Seasonal cần ít nhất 24 tháng để chọn tháng. Dùng `date_from` và `date_to` cùng nhau để lọc khoảng ngày. `date_to` là cận loại trừ. Mặc định dùng tối đa 366 ngày gần nhất đã nạp. Khoảng chỉ định hỗ trợ đến 1.096 ngày.
+Các endpoint danh sách hỗ trợ `limit` mặc định 5, `offset` và trả `has_more`. Line, scatter và histogram nhận `grain=day|week|month`. Trend và seasonal nhận `grain=auto|week|month`. `auto` dùng tháng khi có đủ tháng quan sát. Trend cần ít nhất 6 tháng để chọn tháng. Seasonal cần ít nhất 24 tháng để chọn tháng. `GET /coverage` trả ngày đầu và ngày cuối có bản ghi. Dùng `date_from` và `date_to` cùng nhau để lọc khoảng ngày. `date_to` là cận loại trừ. Khoảng mặc định và khoảng chỉ định hỗ trợ tối đa 1.096 ngày.
 
 ```text
 GET /api/analytics/line?grain=week&limit=5&offset=0

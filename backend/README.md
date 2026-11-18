@@ -22,9 +22,9 @@ INGESTION_INTERVAL_SECONDS=300
 
 Không gửi key vào frontend. Các hạn mức ở trên là ngân sách do ứng dụng tự đặt, không phải cam kết quota của nhà cung cấp. Đặt ngày reset và ngân sách theo dashboard, trừ lượt đã dùng bên ngoài ứng dụng. Bộ đếm không tự đồng bộ với nhà cung cấp.
 
-Ingestion chạy ngay khi khởi động, sau mỗi lượt chờ 300 giây. Một sân bay/một trang mỗi 5 phút chạy 24/7 cần khoảng 8.640 request schedules/30 ngày, chưa tính tra sân bay. Với budget 800, service sẽ dừng gọi khi hết budget và giữ dữ liệu đã lưu. Để demo, chỉ bật khi cần; để chạy cả tháng, tăng chu kỳ hoặc dùng gói phù hợp.
+Backend tự lên lịch ingestion mỗi 300 giây theo mặc định. Hai lượt bắt đầu cách nhau tối thiểu 300 giây. Mốc lượt gần nhất lưu trong DB để lần khởi động lại dùng chung lịch. Một sân bay/một trang mỗi 5 phút chạy 24/7 cần khoảng 8.640 request schedules/30 ngày, chưa tính tra sân bay. Với budget 800, service sẽ dừng gọi khi hết budget và giữ dữ liệu đã lưu.
 
-Free schedules lấy tối đa 50 dòng/trang. `AIRLABS_MAX_PAGES=1` là giới hạn có chủ ý; API báo có trang tiếp thì trạng thái sẽ ghi coverage partial. Không coi dữ liệu này là toàn bộ chuyến bay Mỹ. JFK chỉ lọc sân bay khởi hành, có thể có chuyến quốc tế.
+Mỗi trang schedules yêu cầu tối đa 50 dòng. Tăng `AIRLABS_MAX_PAGES` trong `.env` (ví dụ `2`) để lấy thêm trang khi nguồn còn dữ liệu. Mỗi trang và mỗi lượt tra sân bay chưa có cache tính riêng vào ngân sách AirLabs. Nếu chạm giới hạn phân trang, `/providers` ghi coverage partial. `AIRLABS_AIRPORTS=JFK` lấy chuyến khởi hành từ JFK, gồm cả tuyến quốc tế.
 
 ## 2. Chạy Docker
 
@@ -44,15 +44,9 @@ docker compose logs -f --tail 100 ingestion
 - Chuyến bay: http://localhost:2002/api/ingestion/flights
 - Snapshot response đã lưu: http://localhost:2002/api/ingestion/raw
 
-Lấy ngay một lượt (có tiêu quota):
-
-```powershell
-Invoke-RestMethod -Method Post http://localhost:2002/api/ingestion/run
-```
-
 Khi sửa `.env`, chạy `docker compose up -d ingestion` để tạo lại container với biến mới. `restart` không nạp lại cấu hình Compose. Khi sửa code, thêm `--build`.
 
-Thiếu key vẫn khởi động được; `/providers` và dashboard báo nguồn chưa sẵn sàng. Refresh trang chỉ đọc DB. Nút **Lấy dữ liệu API** mới chạy ingestion thủ công.
+Thiếu key vẫn khởi động được và `/providers` báo nguồn chưa sẵn sàng. Tải lại trang và đổi bộ lọc chỉ đọc dữ liệu đã lưu. Scheduler backend là điểm khởi chạy lượt thu thập AirLabs và OpenWeather.
 
 ## 3. Nhiều tài khoản
 
