@@ -140,6 +140,7 @@ def load_flight_rows(settings: Settings) -> list[dict[str, Any]]:
     """
     rows: list[dict[str, Any]] = []
     src_url = settings.source_database_url
+    live_filter = " WHERE flight_key IN (SELECT flight_key FROM live_flight_details)" if settings.live_api_mode else ""
     try:
         if src_url.startswith(("postgresql://", "postgres://")):
             import psycopg
@@ -148,7 +149,7 @@ def load_flight_rows(settings: Settings) -> list[dict[str, Any]]:
                 with conn.cursor() as cur:
                     cur.execute(
                         "SELECT origin, dest, dep_hour, crs_elapsed_time, distance, delay_minutes "
-                        "FROM ingested_flights LIMIT %s",
+                        "FROM ingested_flights" + live_filter + " LIMIT %s",
                         (settings.max_sample_rows,),
                     )
                     rows = [dict(r) for r in cur.fetchall()]
@@ -160,13 +161,15 @@ def load_flight_rows(settings: Settings) -> list[dict[str, Any]]:
                     cur = conn.cursor()
                     cur.execute(
                         "SELECT origin, dest, dep_hour, crs_elapsed_time, distance, delay_minutes "
-                        "FROM ingested_flights LIMIT ?",
+                        "FROM ingested_flights" + live_filter + " LIMIT ?",
                         (settings.max_sample_rows,),
                     )
                     rows = [dict(r) for r in cur.fetchall()]
     except Exception as exc:
         logger.debug("Could not read rows from source DB (%s): %s", src_url, exc)
 
+    if settings.live_api_mode:
+        return [r for r in rows if r.get("delay_minutes") is not None and r.get("distance") is not None and r.get("crs_elapsed_time") is not None]
     unique_origins = {r["origin"] for r in rows if r.get("origin")}
     if len(unique_origins) >= settings.n_clusters:
         return rows
@@ -337,7 +340,7 @@ def train_and_save_model(settings: Settings | None = None) -> dict[str, Any]:
     k = settings.n_clusters
     kmeans = KMeans(n_clusters=k, random_state=42, n_init=15)
     raw_labels = kmeans.fit_predict(X_scaled)
-    sil_score = float(silhouette_score(X_scaled, raw_labels)) if len(airports) > k else 0.0
+    sil_score = float(silhouette_score(X_scaled, raw_labels)) if 1 < len(set(raw_labels)) < len(airports) else 0.0
 
     pca = PCA(n_components=2, random_state=42)
     pca.fit(X_scaled)

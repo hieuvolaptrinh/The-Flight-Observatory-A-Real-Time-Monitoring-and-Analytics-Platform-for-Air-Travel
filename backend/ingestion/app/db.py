@@ -9,11 +9,13 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import logging
+import json
 from pathlib import Path
 import sqlite3
 from typing import Any
 
 from app.schedule import Flight, ReplayPosition, save_flights_batch
+from app.live_store import LiveStore
 
 logger = logging.getLogger(__name__)
 
@@ -37,9 +39,9 @@ CREATE TABLE IF NOT EXISTS ingested_flights (
     dep_hour INTEGER,
     crs_elapsed_time REAL,
     distance REAL,
-    delay_minutes REAL NOT NULL,
+    delay_minutes REAL,
     delay_status TEXT NOT NULL,
-    is_delayed INTEGER NOT NULL,
+    is_delayed INTEGER,
     fetched_at TEXT NOT NULL,
     ingested_at TEXT NOT NULL
 );
@@ -85,11 +87,16 @@ INSERT INTO ingested_flights (
     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
     %s, %s, %s
 )
-ON CONFLICT (flight_key) DO NOTHING
+ON CONFLICT (flight_key) DO UPDATE SET
+    crs_arr_time=EXCLUDED.crs_arr_time, crs_elapsed_time=EXCLUDED.crs_elapsed_time,
+    distance=EXCLUDED.distance, delay_minutes=EXCLUDED.delay_minutes,
+    delay_status=EXCLUDED.delay_status, is_delayed=EXCLUDED.is_delayed,
+    tail_num=COALESCE(EXCLUDED.tail_num, ingested_flights.tail_num),
+    fetched_at=EXCLUDED.fetched_at, ingested_at=EXCLUDED.ingested_at
 """
 
 SQLITE_INSERT_INGESTED_FLIGHT_SQL = """
-INSERT OR IGNORE INTO ingested_flights (
+INSERT INTO ingested_flights (
     flight_key, fl_date, day_of_week, op_unique_carrier, carrier_name,
     tail_num, op_carrier_fl_num, flight_code, origin_airport_id, origin,
     dest_airport_id, dest, route, crs_dep_time, crs_arr_time, dep_hour,
@@ -100,11 +107,18 @@ INSERT OR IGNORE INTO ingested_flights (
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?
 )
+ON CONFLICT (flight_key) DO UPDATE SET
+    crs_arr_time=excluded.crs_arr_time, crs_elapsed_time=excluded.crs_elapsed_time,
+    distance=excluded.distance, delay_minutes=excluded.delay_minutes,
+    delay_status=excluded.delay_status, is_delayed=excluded.is_delayed,
+    tail_num=COALESCE(excluded.tail_num, ingested_flights.tail_num),
+    fetched_at=excluded.fetched_at, ingested_at=excluded.ingested_at
 """
 
 PG_STATS_SQL = """
 SELECT
     COUNT(*) AS filtered_count,
+    COUNT(delay_minutes) AS known_delay_count,
     SUM(CASE WHEN is_delayed = 1 THEN 1 ELSE 0 END) AS delayed_count,
     SUM(CASE WHEN delay_status = 'on_time' THEN 1 ELSE 0 END) AS on_time_count,
     SUM(CASE WHEN delay_status = 'moderate_delay' THEN 1 ELSE 0 END) AS moderate_delay_count,
@@ -133,6 +147,7 @@ WHERE (%(origin)s::text IS NULL OR origin = %(origin)s)
 SQLITE_STATS_SQL = """
 SELECT
     COUNT(*) AS filtered_count,
+    COUNT(delay_minutes) AS known_delay_count,
     SUM(CASE WHEN is_delayed = 1 THEN 1 ELSE 0 END) AS delayed_count,
     SUM(CASE WHEN delay_status = 'on_time' THEN 1 ELSE 0 END) AS on_time_count,
     SUM(CASE WHEN delay_status = 'moderate_delay' THEN 1 ELSE 0 END) AS moderate_delay_count,
@@ -333,6 +348,30 @@ class FlightRepository:
             self.sqlite_path = Path(raw_path).resolve()
             self.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
         self.init_db()
+        LiveStore(self).migrate()
+
+    def airport_identity(self, code):
+        with self._connect_postgres() as conn:
+            row = conn.execute("SELECT airport_id, airport_seq_id, city_market_id FROM flight_data.airport_versions WHERE airport_code=%s ORDER BY airport_seq_id DESC LIMIT 1", (code,)).fetchone()
+            return dict(row) if row else None
+
+    def raw_live_flights(self, offset, limit):
+        store = LiveStore(self)
+        with store.connect() as conn:
+            total = conn.execute("SELECT COUNT(*) AS n FROM live_flight_details").fetchone()["n"]
+            rows = conn.execute(store.sql("SELECT flight_key,payload FROM live_flight_details ORDER BY flight_key LIMIT ? OFFSET ?"), (limit, offset)).fetchall()
+        data = []
+        for index, row in enumerate(rows):
+            raw = json.loads(row["payload"])["raw"]
+            data.append({
+                "RAW_ID": row["flight_key"], "ROW_NUMBER": offset+index+1,
+                "FL_DATE": str(raw.get("dep_time", ""))[:10],
+                "OP_UNIQUE_CARRIER": raw.get("airline_iata"), "OP_CARRIER_FL_NUM": raw.get("flight_number"),
+                "ORIGIN": raw.get("dep_iata"), "DEST": raw.get("arr_iata"),
+                "CRS_DEP_TIME": raw.get("dep_time"), "CRS_ARR_TIME": raw.get("arr_time"),
+                "TAIL_NUM": raw.get("reg_number"), "raw": raw,
+            })
+        return {"source": "airlabs", "total": total, "data": data, "window_start": offset, "window_end": offset+len(data)}
 
     def _connect_sqlite(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.sqlite_path))
@@ -349,7 +388,7 @@ class FlightRepository:
             with self._connect_postgres() as conn:
                 with conn.cursor() as cur:
                     cur.execute(SCHEMA_SQL)
-                    cur.execute("SELECT to_regclass('flight_data.simulator_offsets') IS NOT NULL AS enabled")
+                    cur.execute("SELECT to_regclass('flight_data.flights') IS NOT NULL AS enabled")
                     self.has_schedule = cur.fetchone()["enabled"]
                 conn.commit()
         else:
@@ -376,6 +415,7 @@ class FlightRepository:
         """
         received = len(records)
         inserted = 0
+        updated = 0
         param_rows = [tuple(r.get(c) for c in INGESTED_FLIGHT_COLS) for r in records]
 
         if self.is_postgres:
@@ -394,16 +434,22 @@ class FlightRepository:
                     if scheduled:
                         save_flights_batch(cur, scheduled)
                     if param_rows:
+                        for record in records:
+                            cur.execute("SELECT 1 FROM ingested_flights WHERE flight_key=%s", (record["flight_key"],))
+                            updated += int(cur.fetchone() is not None)
                         cur.executemany(PG_INSERT_INGESTED_FLIGHT_SQL, param_rows)
-                        inserted = cur.rowcount
+                        inserted = received - updated
+                    for record in records:
+                        if record.get("_details"):
+                            cur.execute("INSERT INTO live_flight_details VALUES (%s, %s) ON CONFLICT(flight_key) DO UPDATE SET payload=excluded.payload", (record["flight_key"], json.dumps(record["_details"])))
                     cur.execute("SELECT COUNT(*) AS cnt FROM ingested_flights")
                     total_stored = int(cur.fetchone()["cnt"])
                     cur.execute(
                         """
                         INSERT INTO ingestion_batches (
                             batch_id, source, fetched_at, window_start, window_end,
-                            received_count, inserted_count, duplicate_count, total_stored, created_at
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            received_count, inserted_count, duplicate_count, total_stored, created_at, updated_count
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         """,
                         (
                             batch_meta["batch_id"],
@@ -413,9 +459,10 @@ class FlightRepository:
                             batch_meta.get("window_end"),
                             received,
                             inserted,
-                            max(0, received - inserted),
+                            0,
                             total_stored,
                             batch_meta["created_at"],
+                            updated,
                         ),
                     )
                     if replay is not None:
@@ -428,16 +475,22 @@ class FlightRepository:
             with self._connect_sqlite() as conn:
                 cur = conn.cursor()
                 if param_rows:
+                    for record in records:
+                        cur.execute("SELECT 1 FROM ingested_flights WHERE flight_key=?", (record["flight_key"],))
+                        updated += int(cur.fetchone() is not None)
                     cur.executemany(SQLITE_INSERT_INGESTED_FLIGHT_SQL, param_rows)
-                    inserted = cur.rowcount
+                    inserted = received - updated
+                for record in records:
+                    if record.get("_details"):
+                        cur.execute("INSERT INTO live_flight_details VALUES (?, ?) ON CONFLICT(flight_key) DO UPDATE SET payload=excluded.payload", (record["flight_key"], json.dumps(record["_details"])))
                 cur.execute("SELECT COUNT(*) AS cnt FROM ingested_flights")
                 total_stored = int(cur.fetchone()["cnt"])
                 cur.execute(
                     """
                     INSERT INTO ingestion_batches (
                         batch_id, source, fetched_at, window_start, window_end,
-                        received_count, inserted_count, duplicate_count, total_stored, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        received_count, inserted_count, duplicate_count, total_stored, created_at, updated_count
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         batch_meta["batch_id"],
@@ -447,17 +500,19 @@ class FlightRepository:
                         batch_meta.get("window_end"),
                         received,
                         inserted,
-                        max(0, received - inserted),
+                        0,
                         total_stored,
                         batch_meta["created_at"],
+                        updated,
                     ),
                 )
                 conn.commit()
 
-        duplicates = max(0, received - inserted)
+        duplicates = 0
         return {
             "received_count": received,
             "inserted_count": inserted,
+            "updated_count": updated,
             "duplicate_count": duplicates,
             "total_stored": total_stored,
         }
@@ -528,9 +583,20 @@ class FlightRepository:
                 dests = sorted((facet_row.get("dests") or "").split(",")) if facet_row.get("dests") else []
                 carriers = sorted((facet_row.get("carriers") or "").split(",")) if facet_row.get("carriers") else []
 
+        store = LiveStore(self)
+        with store.connect() as connection:
+            for item in items:
+                detail = connection.execute(store.sql("SELECT payload FROM live_flight_details WHERE flight_key=?"), (item["flight_key"],)).fetchone()
+                if detail:
+                    info = json.loads(detail["payload"])
+                    item.update({k: info.get(k) for k in ("source", "flight_status", "delay_kind", "distance_source", "scheduled_dep_utc")})
+                else:
+                    item["source"] = "legacy"
+        provider_status, _ = store.cached("ingestion_status")
         filtered_count = int(stats_row.get("filtered_count") or 0)
         delayed_count = int(stats_row.get("delayed_count") or 0)
-        delay_rate_pct = round((delayed_count / filtered_count * 100.0), 1) if filtered_count > 0 else 0.0
+        known_delay_count = int(stats_row.get("known_delay_count") or 0)
+        delay_rate_pct = round(delayed_count / known_delay_count * 100.0, 1) if known_delay_count else 0.0
         latest_ingested_at_str = stats_row.get("latest_ingested_at")
         updated_at = None
         if latest_ingested_at_str:
@@ -550,6 +616,8 @@ class FlightRepository:
             "has_more": offset + len(items) < filtered_count,
             "sort": sort_key,
             "delayed_count": delayed_count,
+            "known_delay_count": known_delay_count,
+            "unknown_delay_count": filtered_count - known_delay_count,
             "on_time_count": int(stats_row.get("on_time_count") or 0),
             "moderate_delay_count": int(stats_row.get("moderate_delay_count") or 0),
             "severe_delay_count": int(stats_row.get("severe_delay_count") or 0),
@@ -566,6 +634,7 @@ class FlightRepository:
                 for r in carrier_rows
             ],
             "last_batch": last_batch_dict,
+            "provider_status": provider_status,
             "available_filters": {
                 "origins": origins,
                 "destinations": dests,
@@ -588,6 +657,7 @@ class FlightRepository:
                     cur.execute("DELETE FROM ingested_flights")
                     deleted = cur.rowcount
                     cur.execute("DELETE FROM ingestion_batches")
+                    cur.execute("DELETE FROM live_flight_details")
                 conn.commit()
         else:
             with self._connect_sqlite() as conn:
@@ -595,5 +665,6 @@ class FlightRepository:
                 cur.execute("DELETE FROM ingested_flights")
                 deleted = cur.rowcount
                 cur.execute("DELETE FROM ingestion_batches")
+                cur.execute("DELETE FROM live_flight_details")
                 conn.commit()
         return deleted

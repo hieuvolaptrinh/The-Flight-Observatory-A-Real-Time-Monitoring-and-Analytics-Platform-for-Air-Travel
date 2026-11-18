@@ -23,6 +23,7 @@ def _env_bool(key: str, default: bool = False) -> bool:
 
 
 class Settings(BaseModel):
+    live_api_mode: bool = Field(default_factory=lambda: os.getenv("LIVE_API_MODE", "true").lower() == "true")
     service_name: str = Field(default_factory=lambda: os.getenv("SERVICE_NAME", "clustering"))
     root_path: str = Field(default_factory=lambda: os.getenv("ROOT_PATH", ""))
     scheduler_enabled: bool = Field(default_factory=lambda: _env_bool("SCHEDULER_ENABLED", False))

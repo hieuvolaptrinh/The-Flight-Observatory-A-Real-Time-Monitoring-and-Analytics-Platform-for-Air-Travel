@@ -69,7 +69,7 @@ export function TopHeader({
             disabled={busy}
           >
             <Icon name="refresh" size={15} />
-            Nạp batch mới (POST /run)
+            Lấy dữ liệu API
           </button>
         </div>
       </div>

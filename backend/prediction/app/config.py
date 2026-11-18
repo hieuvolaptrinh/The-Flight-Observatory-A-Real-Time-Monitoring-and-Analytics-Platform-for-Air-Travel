@@ -15,6 +15,7 @@ _DEFAULT_SOURCE_DB = f"sqlite:///{(_SERVICE_DIR.parent / 'ingestion' / 'data' / 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
+    live_api_mode: bool = Field(default_factory=lambda: os.getenv("LIVE_API_MODE", "true").lower() == "true")
     service_name: str = "prediction"
     root_path: str = ""
     scheduler_enabled: bool = True

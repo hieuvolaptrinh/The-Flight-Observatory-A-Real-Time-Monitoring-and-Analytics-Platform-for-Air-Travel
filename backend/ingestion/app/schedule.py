@@ -48,7 +48,10 @@ INSERT INTO flight_data.flights (
     %(scheduled_dep_local)s::time, %(scheduled_arr_local)s::time, %(scheduled_elapsed_min)s, %(distance_miles)s
 )
 ON CONFLICT ON CONSTRAINT flights_schedule_key DO UPDATE
-    SET tail_number = COALESCE(EXCLUDED.tail_number, flight_data.flights.tail_number)
+    SET tail_number = COALESCE(EXCLUDED.tail_number, flight_data.flights.tail_number),
+        scheduled_arr_local = COALESCE(EXCLUDED.scheduled_arr_local, flight_data.flights.scheduled_arr_local),
+        scheduled_elapsed_min = COALESCE(EXCLUDED.scheduled_elapsed_min, flight_data.flights.scheduled_elapsed_min),
+        distance_miles = COALESCE(EXCLUDED.distance_miles, flight_data.flights.distance_miles)
 RETURNING flight_id
 """
 
@@ -56,11 +59,12 @@ UPSERT_FLIGHT_OUTCOME_SQL = """
 INSERT INTO flight_data.flight_outcomes (
     flight_id, dep_delay_min, arr_delay_min, cancelled, diverted
 ) VALUES (
-    %(flight_id)s, %(dep_delay_min)s, %(arr_delay_min)s, FALSE, FALSE
+    %(flight_id)s, %(dep_delay_min)s, %(arr_delay_min)s, %(cancelled)s, %(diverted)s
 )
 ON CONFLICT (flight_id) DO UPDATE SET
-    dep_delay_min = EXCLUDED.dep_delay_min,
-    arr_delay_min = EXCLUDED.arr_delay_min
+    dep_delay_min = COALESCE(EXCLUDED.dep_delay_min, flight_data.flight_outcomes.dep_delay_min),
+    arr_delay_min = COALESCE(EXCLUDED.arr_delay_min, flight_data.flight_outcomes.arr_delay_min),
+    cancelled = EXCLUDED.cancelled, diverted = EXCLUDED.diverted
 """
 
 
@@ -104,7 +108,12 @@ class Flight(BaseModel):
     CRS_ARR_TIME: str | None
     CRS_ELAPSED_TIME: float | None
     DISTANCE: float | None
-    DELAY_MINUTES: float = 0.0
+    DELAY_MINUTES: float | None = None
+    LIVE: bool = False
+    DEP_DELAY_MIN: float | None = None
+    ARR_DELAY_MIN: float | None = None
+    CANCELLED: bool = False
+    DIVERTED: bool = False
 
     @model_validator(mode="after")
     def check_schedule(self):
@@ -158,14 +167,9 @@ def save_flight(db, flight: Flight) -> None:
     flight_row = db.fetchone()
     if flight_row is not None:
         flight_id = flight_row["flight_id"] if isinstance(flight_row, dict) else flight_row[0]
-        delay_val = round(float(flight.DELAY_MINUTES or 0.0), 2)
         db.execute(
             UPSERT_FLIGHT_OUTCOME_SQL,
-            {
-                "flight_id": flight_id,
-                "dep_delay_min": delay_val,
-                "arr_delay_min": delay_val,
-            },
+            outcome_params(flight, flight_id),
         )
 
 
@@ -233,12 +237,16 @@ def save_flights_batch(db, flights: tuple[Flight, ...] | list[Flight]) -> None:
         flight_row = db.fetchone()
         if flight_row is not None:
             flight_id = flight_row["flight_id"] if isinstance(flight_row, dict) else flight_row[0]
-            delay_val = round(float(flight.DELAY_MINUTES or 0.0), 2)
             db.execute(
                 UPSERT_FLIGHT_OUTCOME_SQL,
-                {
-                    "flight_id": flight_id,
-                    "dep_delay_min": delay_val,
-                    "arr_delay_min": delay_val,
-                },
+                outcome_params(flight, flight_id),
             )
+
+
+def outcome_params(flight, flight_id):
+    return {
+        "flight_id": flight_id,
+        "dep_delay_min": flight.DEP_DELAY_MIN if flight.LIVE else flight.DELAY_MINUTES,
+        "arr_delay_min": flight.ARR_DELAY_MIN if flight.LIVE else flight.DELAY_MINUTES,
+        "cancelled": flight.CANCELLED, "diverted": flight.DIVERTED,
+    }

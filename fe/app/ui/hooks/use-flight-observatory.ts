@@ -21,7 +21,7 @@ import { US_AIRPORT_COORDS } from "../us-airports";
 
 const DIRECT_INGESTION_URLS = ["http://127.0.0.1:2004", "http://localhost:2004"];
 const DIRECT_CLUSTERING_URLS = ["http://127.0.0.1:2006", "http://localhost:2006"];
-const DIRECT_PREDICTION_URLS = ["http://127.0.0.1:2003", "http://localhost:2003"];
+const DIRECT_PREDICTION_URLS = ["http://127.0.0.1:2007", "http://localhost:2007"];
 
 export function useFlightObservatory(view: ViewMode) {
   const isOverview = view === "overview";
@@ -74,21 +74,21 @@ export function useFlightObservatory(view: ViewMode) {
   const [mlPredictions, setMlPredictions] = useState<PredictionItem[] | null>(null);
   const [predictionMeta, setPredictionMeta] = useState<Record<string, any> | null>(null);
 
-  // Raw Data Lakehouse state (Bronze Layer - analytics.raw_flights via simulator API)
+  // Raw Data Lakehouse state (Bronze Layer - saved AirLabs responses via Ingestion API)
   const [dataLayer, setDataLayer] = useState<"cleaned" | "raw">("cleaned");
   const [rawFlights, setRawFlights] = useState<RawFlightItem[]>([]);
   const [rawLoading, setRawLoading] = useState(false);
   const [rawCursor, setRawCursor] = useState(0);
-  const [rawTotal, setRawTotal] = useState(539719);
+  const [rawTotal, setRawTotal] = useState(0);
   const rawPageSize = 12;
 
   const fetchRawFlights = useCallback(async (cursor: number) => {
     setRawLoading(true);
     try {
       const candidates = [
-        `${API_BASE}/simulator/flights?cursor=${cursor}&window_size=${rawPageSize}`,
-        `http://127.0.0.1:2003/flights?cursor=${cursor}&window_size=${rawPageSize}`,
-        `http://localhost:2003/flights?cursor=${cursor}&window_size=${rawPageSize}`,
+        `${API_BASE}/ingestion/raw?cursor=${cursor}&window_size=${rawPageSize}`,
+        `http://127.0.0.1:2004/raw?cursor=${cursor}&window_size=${rawPageSize}`,
+        `http://localhost:2004/raw?cursor=${cursor}&window_size=${rawPageSize}`,
       ];
       let res: Response | null = null;
       for (const url of candidates) {
@@ -105,7 +105,7 @@ export function useFlightObservatory(view: ViewMode) {
       if (res && res.ok) {
         const payload: RawFlightsResponse = await res.json();
         setRawFlights(payload.data || []);
-        if (payload.total) setRawTotal(payload.total);
+        setRawTotal(payload.total ?? 0);
       }
     } catch (err) {
       console.warn("Could not fetch raw flights:", err);
@@ -399,7 +399,7 @@ export function useFlightObservatory(view: ViewMode) {
     for (const f of dbSourceFlights) {
       const cur = byOrigin.get(f.origin) || { flights: 0, delayed: 0, delaySum: 0 };
       cur.flights += 1;
-      if (f.is_delayed === 1 || f.delay_minutes >= 15) cur.delayed += 1;
+      if (f.is_delayed === 1 || (f.delay_minutes ?? 0) >= 15) cur.delayed += 1;
       cur.delaySum += f.delay_minutes || 0;
       byOrigin.set(f.origin, cur);
     }
@@ -425,7 +425,7 @@ export function useFlightObservatory(view: ViewMode) {
         delayed: 0,
       };
       cur.flights += 1;
-      if (f.is_delayed === 1 || f.delay_minutes >= 15) cur.delayed += 1;
+      if (f.is_delayed === 1 || (f.delay_minutes ?? 0) >= 15) cur.delayed += 1;
       byCarrier.set(f.op_unique_carrier, cur);
     }
     return Array.from(byCarrier.entries()).map(([code, st]) => ({
@@ -441,20 +441,8 @@ export function useFlightObservatory(view: ViewMode) {
     if (mlPredictions && mlPredictions.length > 0) {
       return mlPredictions;
     }
-    // Fallback: estimate from live database flights if prediction service is offline
-    return dbSourceFlights.slice(0, 50).map(f => {
-      const prob = Math.min(96, Math.max(8, Math.round(18 + f.delay_minutes * 1.35)));
-      return {
-        flight: f.flight_code,
-        carrier: f.op_unique_carrier,
-        origin: f.origin,
-        destination: f.dest,
-        time: f.crs_dep_time,
-        delay: Math.round(f.delay_minutes),
-        probability: prob,
-      };
-    });
-  }, [mlPredictions, dbSourceFlights]);
+    return [];
+  }, [mlPredictions]);
 
   const selection = airports.filter(a => airport === "all" || a.code === airport);
   const foundCarrier = carriers.find(c => c.code === carrier);
@@ -552,6 +540,7 @@ export function useFlightObservatory(view: ViewMode) {
   const flightsAvgDistance = isServerSide ? serverMeta.avg_distance : 0;
 
   const statusCounts: Record<FlightItem["delay_status"], number> = {
+    unknown: serverMeta?.unknown_delay_count ?? 0,
     on_time: isServerSide ? serverMeta.on_time_count : 0,
     moderate_delay: isServerSide ? serverMeta.moderate_delay_count : 0,
     severe_delay: isServerSide ? serverMeta.severe_delay_count : 0,

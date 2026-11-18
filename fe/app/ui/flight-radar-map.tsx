@@ -232,7 +232,7 @@ export default function FlightRadarMap({
 
     for (const ef of enrichedFlights) {
       const { origin, dest, delay_status, is_delayed, delay_minutes } = ef.item;
-      const delayed = is_delayed === 1 || delay_minutes >= 15 || delay_status !== "on_time";
+      const delayed = is_delayed === 1 || (delay_minutes ?? 0) >= 15 || delay_status === "moderate_delay" || delay_status === "severe_delay";
 
       const oEntry = map.get(origin) || {
         code: origin,
@@ -496,7 +496,7 @@ export default function FlightRadarMap({
           `<div style="font-size:11px;line-height:1.45;">
             <strong>${ef.item.flight_code}</strong> (${ef.item.carrier_name})<br/>
             <span><b>${ef.item.origin}</b> → <b>${ef.item.dest}</b> · Tail: ${ef.item.tail_num || "N/A"}</span><br/>
-            <span>Giờ: ${ef.item.crs_dep_time} → ${ef.item.crs_arr_time} · Delay: <b>+${ef.item.delay_minutes}p</b></span>
+            <span>Giờ: ${ef.item.crs_dep_time} → ${ef.item.crs_arr_time} · Delay: <b>${ef.item.delay_minutes == null ? "Chưa biết" : `${ef.item.delay_minutes}p`}</b></span>
             ${oClusterInfo ? `<br/><span style="color:#93c5fd;">Sân bay đi thuộc: <b>Cụm ${oClusterInfo.cluster_id} (${oClusterInfo.short_label})</b></span>` : ""}
           </div>`,
           { direction: "top", offset: [0, -10], className: "fa-map-tooltip" }
@@ -743,7 +743,7 @@ export default function FlightRadarMap({
                   <div style={{ width: `${Math.min(100, Math.max(4, liveProgress * 100))}%` }} />
                 </div>
                 <small>
-                  {number(Math.round(selectedEnriched.item.distance))} dặm ({Math.round(selectedEnriched.item.crs_elapsed_time)}p)
+                  {number(Math.round(selectedEnriched.item.distance ?? 0))} dặm ({Math.round(selectedEnriched.item.crs_elapsed_time ?? 0)}p)
                 </small>
               </div>
               <div className="fa-hud-airport" style={{ textAlign: "right" }}>
@@ -769,14 +769,14 @@ export default function FlightRadarMap({
                 <strong
                   style={{
                     color:
-                      selectedEnriched.item.delay_minutes >= 45
+                      (selectedEnriched.item.delay_minutes ?? 0) >= 45
                         ? "#f87171"
-                        : selectedEnriched.item.delay_minutes >= 15
+                        : (selectedEnriched.item.delay_minutes ?? 0) >= 15
                           ? "#fbbf24"
                           : "#4ade80",
                   }}
                 >
-                  +{selectedEnriched.item.delay_minutes}p ({statusLabels[selectedEnriched.item.delay_status]})
+                  {selectedEnriched.item.delay_minutes == null ? "Chưa biết" : `${selectedEnriched.item.delay_minutes}p`} ({statusLabels[selectedEnriched.item.delay_status]})
                 </strong>
               </div>
               {airportClusterMap[selectedEnriched.item.origin] && (

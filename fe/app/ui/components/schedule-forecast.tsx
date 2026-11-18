@@ -50,7 +50,7 @@ export function ScheduleForecast() {
   return (
     <section className="analytics-panel schedule-forecast" aria-label="Dự báo lưu lượng ngày kế tiếp">
       <h2>Dự báo lưu lượng ngày kế tiếp</h2>
-      <p>Ngày kế tiếp tính theo mốc cuối của dữ liệu chuyến bay trong simulator.</p>
+      <p>Ngày kế tiếp tính theo mốc cuối của dữ liệu chuyến bay đã lưu trong hệ thống.</p>
       {forecast?.ready && (
         <dl className="schedule-forecast-summary">
           <div><dt>Ngày dự báo</dt><dd>{forecast.forecast_date}</dd></div>
