@@ -1,6 +1,10 @@
-// Định nghĩa toàn bộ kiểu dữ liệu Chuyến bay (`ingested_flights`), Metadata Server-side SQL và Phân cụm K-Means (`cluster_centroids`, `cluster_assignments`)
+import type { AirportCoord } from "./us-airports";
 
-export type ViewMode = "overview" | "flights" | "clustering" | "forecast";
+// Type definitions for flight items (ingested_flights), server-side SQL metadata, and clustering/prediction schemas
+
+export const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:2002/api";
+
+export type ViewMode = "overview" | "flights" | "clustering" | "forecast" | "analytics";
 
 export type IconName =
   | "plane"
@@ -30,17 +34,47 @@ export interface FlightItem {
   origin: string;
   dest: string;
   route: string;
+  origin_coordinate?: AirportCoord | null;
+  dest_coordinate?: AirportCoord | null;
   crs_dep_time: string;
-  crs_arr_time: string;
-  crs_elapsed_time: number;
-  distance: number;
-  delay_minutes: number;
-  delay_status: "on_time" | "moderate_delay" | "severe_delay";
-  is_delayed: number;
+  crs_arr_time: string | null;
+  crs_elapsed_time: number | null;
+  distance: number | null;
+  delay_minutes: number | null;
+  delay_status: "on_time" | "moderate_delay" | "severe_delay" | "unknown";
+  source?: string;
+  delay_kind?: string;
+  flight_status?: string;
+  is_delayed: number | null;
+  day_of_week?: number;
+  dep_hour?: number;
   ingested_at: string;
 }
 
+export interface HourlyFlightStat {
+  hour: number;
+  flights: number;
+  known: number;
+  delayed: number;
+}
+
+interface FlightGroupStat {
+  code: string;
+  name?: string;
+  flight_count: number;
+  known_count: number;
+  delayed_count: number;
+  avg_delay: number | null;
+}
+
 export interface ServerFlightMeta {
+  hourly?: HourlyFlightStat[];
+  airport_stats?: FlightGroupStat[];
+  carrier_stats?: FlightGroupStat[];
+  unknown_delay_count?: number;
+  provider_status?: { state: string; checked_at?: string; warnings: string[] };
+  first_flight_date?: string | null;
+  last_flight_date?: string | null;
   total_stored: number;
   filtered_count: number;
   returned_count: number;
@@ -127,6 +161,7 @@ export interface ClusteringMeta {
   inertia: number;
   total_airports: number;
   total_routes: number;
+  route_cluster_counts?: Record<number, number>;
   source_flights_count: number;
   centroids: ClusterCentroid[];
 }
@@ -136,7 +171,7 @@ export interface AirportStat {
   name: string;
   city: string;
   flights: number;
-  rate: number;
+  rate: number | null;
   delay: number;
 }
 
@@ -144,7 +179,7 @@ export interface CarrierStat {
   code: string;
   name: string;
   flights: number;
-  rate: number;
+  rate: number | null;
 }
 
 export interface PredictionItem {
@@ -157,20 +192,55 @@ export interface PredictionItem {
   probability: number;
 }
 
+export interface RawFlightItem {
+  RAW_ID: number;
+  ROW_NUMBER: number;
+  DAY_OF_WEEK: string;
+  FL_DATE: string;
+  OP_UNIQUE_CARRIER: string;
+  CARRIER_NAME?: string | null;
+  TAIL_NUM?: string | null;
+  OP_CARRIER_FL_NUM: string;
+  ORIGIN_AIRPORT_ID: string;
+  ORIGIN_AIRPORT_SEQ_ID: string;
+  ORIGIN_CITY_MARKET_ID: string;
+  ORIGIN: string;
+  DEST_AIRPORT_ID: string;
+  DEST_AIRPORT_SEQ_ID: string;
+  DEST_CITY_MARKET_ID: string;
+  DEST: string;
+  CRS_DEP_TIME: string;
+  CRS_ARR_TIME: string;
+  CRS_ELAPSED_TIME: string;
+  DISTANCE: string;
+}
+
+export interface RawFlightsResponse {
+  fetched_at: string;
+  window_start: number;
+  window_end: number;
+  window_size: number;
+  slide_step: number;
+  total: number;
+  data: RawFlightItem[];
+}
+
 export const CLUSTER_COLORS: Record<number, string> = {
-  0: "#ef4444", // Đỏ san hô - Mega-Hub áp lực trễ cao
-  1: "#f59e0b", // Cam hổ phách - Đường dài xuyên lục địa
-  2: "#3b82f6", // Xanh dương - Tuyến khu vực tầm trung
-  3: "#10b981", // Xanh ngọc lục bảo - Khai thác ổn định, đúng giờ cao
+  0: "#ef4444", // Coral Red - Mega-Hub high delay pressure
+  1: "#f59e0b", // Amber Orange - Transcontinental long-haul
+  2: "#3b82f6", // Sky Blue - Regional medium-haul routes
+  3: "#10b981", // Emerald Green - Stable operations, high on-time rate
 };
 
 export const statusLabels: Record<FlightItem["delay_status"], string> = {
+  unknown: "Chưa có dữ liệu delay",
   on_time: "Đúng giờ (< 15p)",
   moderate_delay: "Trễ nhẹ (15–44p)",
   severe_delay: "Trễ nặng (≥ 45p)",
 };
 
-export const statusBadgeClass: Record<FlightItem["delay_status"], "low" | "medium" | "high"> = {
+export const statusBadgeClass: Record<FlightItem["delay_status"], "low" | "medium" | "high" | "unknown"> = {
+  unknown: "unknown",
   on_time: "low",
   moderate_delay: "medium",
   severe_delay: "high",
@@ -186,3 +256,13 @@ export const riskLabels = {
 };
 
 export const number = (value: number) => new Intl.NumberFormat("vi-VN").format(value);
+
+export function flightDateRange(first: string, last: string) {
+  const format = (date: string) => date.split("-").reverse().join("/");
+  return first === last ? format(first) : format(first) + " – " + format(last);
+}
+
+
+export function flightRouteKey(flight: Pick<FlightItem, "origin" | "dest">) {
+  return `${flight.origin} → ${flight.dest}`;
+}

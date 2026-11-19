@@ -1,77 +1,42 @@
-"use client";
+import type { HourlyFlightStat } from "../flight-types";
 
-import { useState } from "react";
+export function TrendChart({ hourly }: { hourly: HourlyFlightStat[] }) {
+  const points = hourly.filter(row => row.known > 0).map(row => ({
+    ...row,
+    x: 50 + row.hour * 24,
+    y: 190 - 1.6 * (row.delayed * 100 / row.known),
+  }));
 
-export function TrendChart({ rate, day }: { rate: number; day: string }) {
-  const [hover, setHover] = useState<number | null>(null);
-  const baseRate = Math.max(5, rate || 18);
-  const values = [12, 10, 13, 11, 15, 20, 17, 23, 18, 24, 29, 23, 26].map(v =>
-    Math.min(39, (v * baseRate) / 21)
-  );
-  const points = values.map((v, i) => `${48 + i * 46},${190 - v * 3.7}`).join(" ");
+  if (!points.length) return <p className="analytics-empty">Chưa có chuyến biết độ trễ trong ngày này.</p>;
 
   return (
     <div className="trend-chart">
-      <svg viewBox="0 0 640 235" role="img" aria-label={`Tỷ lệ chuyến bay trễ theo giờ ngày ${day}`}>
-        <defs>
-          <linearGradient id="area" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#05c48c" stopOpacity=".22" />
-            <stop offset="100%" stopColor="#05c48c" stopOpacity="0" />
-          </linearGradient>
-        </defs>
-        {[0, 10, 20, 30, 40].map(n => (
-          <g key={n}>
-            <line
-              x1="48"
-              x2="610"
-              y1={190 - n * 3.7}
-              y2={190 - n * 3.7}
-              stroke="#e5e7eb"
-              strokeDasharray="4 5"
-            />
-            <text x="32" y={194 - n * 3.7} textAnchor="end">
-              {n}%
-            </text>
+      <svg viewBox="0 0 640 225" role="img" aria-label="Tỷ lệ chuyến bay trễ theo giờ khởi hành">
+        {[0, 25, 50, 75, 100].map(pct => (
+          <g key={pct}>
+            <line x1="50" x2="602" y1={190 - pct * 1.6} y2={190 - pct * 1.6}
+              stroke="#e5e7eb" strokeDasharray="4 5" />
+            <text x="43" y={194 - pct * 1.6} textAnchor="end">{pct}%</text>
           </g>
         ))}
-        <polygon points={`48,190 ${points} 600,190`} fill="url(#area)" />
-        <polyline points={points} fill="none" stroke="#05c48c" strokeWidth="2.8" strokeLinejoin="round" />
-        {values.map((v, i) => (
-          <g key={i} onMouseEnter={() => setHover(i)} onMouseLeave={() => setHover(null)}>
-            <rect x={30 + i * 46} y="30" width="40" height="165" fill="transparent" />
-            {hover === i && (
-              <>
-                <line
-                  x1={48 + i * 46}
-                  x2={48 + i * 46}
-                  y1="30"
-                  y2="190"
-                  stroke="#05c48c"
-                  strokeDasharray="3 3"
-                />
-                <circle
-                  cx={48 + i * 46}
-                  cy={190 - v * 3.7}
-                  r="5"
-                  fill="#05c48c"
-                  stroke="white"
-                  strokeWidth="3"
-                />
-                <text
-                  x={Math.min(575, Math.max(70, 48 + i * 46))}
-                  y={175 - v * 3.7}
-                  textAnchor="middle"
-                  className="chart-tooltip"
-                >
-                  {v.toFixed(1)}%
-                </text>
-              </>
-            )}
-          </g>
-        ))}
-        {[0, 2, 4, 6, 8, 10, 12].map(i => (
-          <text key={i} x={48 + i * 46} y="220" textAnchor="middle">
-            {String(i * 2).padStart(2, "0")}:00
+        {points.map((point, index) => {
+          const previous = points[index - 1];
+          const hour = String(point.hour).padStart(2, "0") + ":00";
+          const rate = (point.delayed * 100 / point.known).toFixed(1);
+          return (
+            <g key={point.hour}>
+              {previous?.hour === point.hour - 1 && (
+                <line x1={previous.x} y1={previous.y} x2={point.x} y2={point.y} stroke="#05c48c" strokeWidth="2.8" />
+              )}
+              <circle cx={point.x} cy={point.y} r="4" fill="#05c48c">
+                <title>{hour} · {rate}% ({point.delayed}/{point.known} chuyến biết độ trễ)</title>
+              </circle>
+            </g>
+          );
+        })}
+        {[0, 4, 8, 12, 16, 20, 23].map(hour => (
+          <text key={hour} x={50 + hour * 24} y="215" textAnchor="middle">
+            {String(hour).padStart(2, "0")}:00
           </text>
         ))}
       </svg>

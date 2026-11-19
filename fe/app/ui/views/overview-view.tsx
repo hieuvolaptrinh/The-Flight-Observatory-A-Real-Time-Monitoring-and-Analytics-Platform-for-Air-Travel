@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { AirportStat, CarrierStat, number } from "../flight-types";
+import { AirportStat, CarrierStat, HourlyFlightStat, number } from "../flight-types";
 import { Icon } from "../components/icons";
 import { Metric } from "../components/metric-card";
 import { TrendChart } from "../components/trend-chart";
@@ -11,7 +11,10 @@ interface OverviewViewProps {
   rate: number;
   delayed: number;
   avg: number;
-  day: string;
+  day: string | null;
+  hourly: HourlyFlightStat[];
+  onTime: number;
+  unknown: number;
   selection: AirportStat[];
   carriers: CarrierStat[];
   rankBy: "airports" | "carriers";
@@ -24,16 +27,23 @@ export function OverviewView({
   delayed,
   avg,
   day,
+  hourly,
+  onTime,
+  unknown,
   selection,
   carriers,
   rankBy,
   setRankBy,
 }: OverviewViewProps) {
+  const known = total - unknown;
+  const onTimePct = known > 0 ? onTime * 100 / known : 0;
+  const ranked = [...(rankBy === "airports" ? selection : carriers)]
+    .sort((a, b) => (b.rate ?? -1) - (a.rate ?? -1) || b.flights - a.flights);
   return (
     <>
       <section className="metrics" aria-label="Chỉ số tổng quan">
         <Metric
-          title="Tổng chuyến bay trong DB"
+          title="Chuyến bay khớp bộ lọc"
           value={number(total)}
           unit="chuyến"
           icon="plane"
@@ -41,7 +51,7 @@ export function OverviewView({
         />
         <Metric
           title="Tỷ lệ chuyến bay trễ"
-          value={rate.toFixed(1)}
+          value={known > 0 ? rate.toFixed(1) : "—"}
           unit="%"
           icon="chart"
           note="Chuyến bay trễ từ 15 phút trở lên"
@@ -57,10 +67,10 @@ export function OverviewView({
         />
         <Metric
           title="Độ trễ trung bình"
-          value={avg.toFixed(1)}
+          value={known > 0 ? avg.toFixed(1) : "—"}
           unit="phút"
           icon="clock"
-          note="Trung bình trên toàn bộ chuyến bay"
+          note="Trung bình các chuyến có số liệu trễ"
           color="purple"
         />
       </section>
@@ -70,36 +80,36 @@ export function OverviewView({
           <div className="panel-heading">
             <div>
               <h2>Nhịp độ khai thác &amp; Tỷ lệ trễ theo khung giờ</h2>
-              <p>Biến động tỷ lệ chuyến bay trễ trong ngày theo giờ địa phương</p>
+              <p>{day ? `Giờ khởi hành địa phương · ${day}` : "Chọn bộ lọc có dữ liệu chuyến bay"}</p>
             </div>
             <span className="legend">
               <i />
               Tỷ lệ trễ (%)
             </span>
           </div>
-          <TrendChart rate={rate} day={day} />
+          <TrendChart hourly={hourly} />
         </section>
 
         <section className="panel donut-panel">
           <div className="panel-heading">
             <div>
               <h2>Tỷ trọng Trạng thái Chuyến bay</h2>
-              <p>Phân bổ đúng giờ và trễ chuyến từ Database</p>
+              <p>Tỷ lệ trong các chuyến biết độ trễ</p>
             </div>
           </div>
           <div
             className="donut"
             style={{
-              background: `conic-gradient(#05c48c 0 ${100 - rate}%, #f97316 ${100 - rate}% 100%)`,
+              background: known ? `conic-gradient(#059669 0 ${onTimePct}%, #d97706 ${onTimePct}% 100%)` : "#e5e7eb",
             }}
             role="img"
-            aria-label={`${(100 - rate).toFixed(1)}% đúng giờ, ${rate.toFixed(1)}% trễ`}
+            aria-label={known ? `${onTimePct.toFixed(1)}% đúng giờ, ${rate.toFixed(1)}% trễ` : "Chưa biết độ trễ"}
           >
             <div>
               <span>Đúng giờ</span>
               <strong>
-                {(100 - rate).toFixed(1)}
-                <small>%</small>
+                {known ? onTimePct.toFixed(1) : "—"}
+                {known > 0 && <small>%</small>}
               </strong>
               <span className="donut-check">
                 <Icon name="check" size={13} />
@@ -111,12 +121,16 @@ export function OverviewView({
             <div>
               <i className="teal-bg" />
               <span>Đúng giờ (&lt; 15 phút)</span>
-              <strong>{number(Math.max(0, total - delayed))}</strong>
+              <strong>{number(onTime)}</strong>
             </div>
             <div>
               <i className="orange-bg" />
               <span>Trễ chuyến (≥ 15 phút)</span>
               <strong>{number(delayed)}</strong>
+            </div>
+            <div>
+              <span>Chưa biết độ trễ</span>
+              <strong>{number(unknown)}</strong>
             </div>
           </div>
         </section>
@@ -147,22 +161,22 @@ export function OverviewView({
             </div>
           </div>
           <div className="ranking-list">
-            {(rankBy === "airports" ? selection : carriers)
-              .slice(0, 6)
+            {ranked.length === 0 && <p>Chưa có dữ liệu theo bộ lọc.</p>}
+            {ranked.slice(0, 6)
               .map((a, i) => (
                 <div className="ranking-row" key={a.code}>
                   <span className="rank-number">{String(i + 1).padStart(2, "0")}</span>
                   <div className="airport-code">{a.code}</div>
                   <div className="ranking-name">
                     <strong>{a.name}</strong>
-                    <span>{a.flights} chuyến trong DB</span>
+                    <span>{a.flights} chuyến bay</span>
                   </div>
                   <div className="ranking-track">
-                    <div style={{ width: `${Math.min(100, (a.rate / 50) * 100)}%` }} />
+                    <div style={{ width: `${a.rate ?? 0}%` }} />
                   </div>
                   <strong className="rank-rate">
-                    {a.rate.toFixed(1)}
-                    <small>%</small>
+                    {a.rate === null ? "—" : a.rate.toFixed(1)}
+                    {a.rate !== null && <small>%</small>}
                   </strong>
                 </div>
               ))}
@@ -170,19 +184,18 @@ export function OverviewView({
         </section>
 
         <section className="tomorrow-card">
-          <h2>Khám phá Bản đồ Radar Không lưu &amp; Phân cụm K-Means</h2>
+          <h2>Khám phá Bản đồ Radar &amp; Phân tích Chuyến bay</h2>
           <p>
-            Theo dõi trực tiếp hàng trăm máy bay di chuyển theo thời gian thực trên bản đồ
-            Hoa Kỳ kết hợp phân cụm sân bay K-Means + PCA 2D.
+            Xem lịch bay và vị trí mô phỏng trên bản đồ, cùng kết quả phân cụm tuyến bay.
           </p>
           <div className="flight-illustration" aria-hidden="true">
-            <span className="flight-code">RADAR MAP (65%)</span>
+            <span className="flight-code">RADAR</span>
             <span className="flight-dashes" />
             <span className="flight-plane">
               <Icon name="plane" size={26} />
             </span>
             <span className="flight-dashes" />
-            <span className="flight-code">K-MEANS PCA (35%)</span>
+            <span className="flight-code">K-MEANS</span>
           </div>
           <Link href="/flights" className="forecast-link">
             Mở Không gian Radar &amp; Chuyến bay

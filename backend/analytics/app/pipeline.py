@@ -27,7 +27,7 @@ class Pipeline:
         if dates["last"] is None:
             return None
         end = dates["last"] + timedelta(days=1)
-        return max(dates["first"], end - timedelta(days=366)), end
+        return max(dates["first"], end - timedelta(days=1096)), end
 
     async def snapshot(self, date_from=None, date_to=None, *, force=False):
         async with await self.connect() as db:
@@ -39,13 +39,17 @@ class Pipeline:
                 FROM analytics.schedule_snapshots WHERE date_from = %s AND date_to = %s
             """
             snapshot = await (await db.execute(lookup, bounds)).fetchone()
-            if (force or snapshot is None or (datetime.now(timezone.utc) - snapshot["computed_at"]).total_seconds()
-                    >= self.settings.job_interval_seconds):
+            # The default dashboard reads the scheduled result. Explicit date
+            # windows retain their on-demand refresh behavior.
+            if force or (date_from is not None and (
+                snapshot is None or (datetime.now(timezone.utc) - snapshot["computed_at"]).total_seconds()
+                >= self.settings.job_interval_seconds
+            )):
                 await db.execute("SELECT analytics.refresh_schedule(%s, %s)", bounds)
                 snapshot = await (await db.execute(lookup, bounds)).fetchone()
             return snapshot
 
-    async def scatter(self, date_from, date_to, grain, limit, offset):
+    async def scatter(self, date_from, date_to, grain, limit, offset, period_start=None):
         async with await self.connect() as db:
             bounds = await self.bounds(db, date_from, date_to)
             if bounds is None:
@@ -56,8 +60,9 @@ class Pipeline:
                        scheduled_elapsed_min, distance_miles, flight_id
                 FROM flight_data.flights WHERE flight_date >= %s AND flight_date < %s
                     AND scheduled_elapsed_min IS NOT NULL
+                    AND (%s::date IS NULL OR date_trunc(%s, flight_date::timestamp)::date = %s)
                 ORDER BY flight_date, scheduled_dep_local, flight_id LIMIT %s OFFSET %s
-            """, (grain, *bounds, limit, offset))
+            """, (grain, *bounds, period_start, grain, period_start, limit, offset))
             return await cursor.fetchall()
 
     async def correlations(self, date_from, date_to):

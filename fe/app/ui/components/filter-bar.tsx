@@ -1,5 +1,6 @@
 import { ClusterCentroid } from "../flight-types";
 import { US_AIRPORT_COORDS } from "../us-airports";
+import { CustomSelect } from "./custom-select";
 import { Icon } from "./icons";
 
 interface FilterBarProps {
@@ -53,86 +54,90 @@ export function FilterBar({
     selectedClusterId !== null ||
     search.trim() !== "";
 
+  const originOptions = [
+    { value: "all", label: `Tất cả sân bay đi (${uniqueOrigins.length})` },
+    ...uniqueOrigins.map(code => ({
+      value: code,
+      label: `Đi từ: ${code} (${US_AIRPORT_COORDS[code]?.city || code})`,
+    })),
+  ];
+
+  const destOptions = [
+    { value: "all", label: `Tất cả sân bay đến (${uniqueDests.length})` },
+    ...uniqueDests.map(code => ({
+      value: code,
+      label: `Đến: ${code} (${US_AIRPORT_COORDS[code]?.city || code})`,
+    })),
+  ];
+
+  const carrierOptions = [
+    { value: "all", label: `Tất cả hãng bay (${uniqueCarriers.length})` },
+    ...uniqueCarriers.map(code => ({
+      value: code,
+      label: `Hãng: ${code}`,
+    })),
+  ];
+
+  const statusOptions = [
+    { value: "all", label: "Mọi trạng thái Delay" },
+    { value: "on_time", label: "Đúng giờ (< 15p)" },
+    { value: "moderate_delay", label: "Trễ nhẹ (15–44p)" },
+    { value: "severe_delay", label: "Trễ nặng (≥ 45p)" },
+  ];
+
+  const clusterOptions = [
+    { value: "all", label: "Tất cả cụm K-Means (4 cụm)" },
+    ...centroids.map(c => ({
+      value: String(c.cluster_id),
+      label: `Cụm ${c.cluster_id}: ${c.short_label} (${c.entity_count})`,
+    })),
+  ];
+
   return (
     <div className="filter-bar">
       <div className="filters">
-        <div className="filter-control">
-          <Icon name="plane" size={15} />
-          <select
-            aria-label="Sân bay đi"
-            value={airport}
-            onChange={e => setAirport(e.target.value)}
-          >
-            <option value="all">Tất cả sân bay đi ({uniqueOrigins.length})</option>
-            {uniqueOrigins.map(code => (
-              <option key={code} value={code}>
-                Đi từ: {code} ({US_AIRPORT_COORDS[code]?.city || code})
-              </option>
-            ))}
-          </select>
-        </div>
+        <CustomSelect
+          ariaLabel="Sân bay đi"
+          icon="plane"
+          value={airport}
+          onChange={setAirport}
+          options={originOptions}
+          highlightActive
+        />
 
-        <div className="filter-control">
-          <select
-            aria-label="Sân bay đến"
-            value={destAirport}
-            onChange={e => setDestAirport(e.target.value)}
-          >
-            <option value="all">Tất cả sân bay đến ({uniqueDests.length})</option>
-            {uniqueDests.map(code => (
-              <option key={code} value={code}>
-                Đến: {code} ({US_AIRPORT_COORDS[code]?.city || code})
-              </option>
-            ))}
-          </select>
-        </div>
+        <CustomSelect
+          ariaLabel="Sân bay đến"
+          value={destAirport}
+          onChange={setDestAirport}
+          options={destOptions}
+          highlightActive
+        />
 
-        <div className="filter-control">
-          <select
-            aria-label="Hãng bay"
-            value={carrier}
-            onChange={e => setCarrier(e.target.value)}
-          >
-            <option value="all">Tất cả hãng bay ({uniqueCarriers.length})</option>
-            {uniqueCarriers.map(code => (
-              <option key={code} value={code}>
-                Hãng: {code}
-              </option>
-            ))}
-          </select>
-        </div>
+        <CustomSelect
+          ariaLabel="Hãng bay"
+          value={carrier}
+          onChange={setCarrier}
+          options={carrierOptions}
+          highlightActive
+        />
 
-        <div className="filter-control">
-          <select
-            aria-label="Lọc trạng thái trễ"
-            value={flightStatus}
-            onChange={e => setFlightStatus(e.target.value)}
-          >
-            <option value="all">Mọi trạng thái Delay</option>
-            <option value="on_time">Đúng giờ (&lt; 15p)</option>
-            <option value="moderate_delay">Trễ nhẹ (15–44p)</option>
-            <option value="severe_delay">Trễ nặng (≥ 45p)</option>
-          </select>
-        </div>
+        <CustomSelect
+          ariaLabel="Lọc trạng thái trễ"
+          value={flightStatus}
+          onChange={setFlightStatus}
+          options={statusOptions}
+          highlightActive
+        />
 
         {centroids.length > 0 && (
-          <div className="filter-control">
-            <Icon name="cluster" size={15} />
-            <select
-              aria-label="Lọc theo cụm K-Means"
-              value={selectedClusterId === null ? "all" : String(selectedClusterId)}
-              onChange={e =>
-                setSelectedClusterId(e.target.value === "all" ? null : Number(e.target.value))
-              }
-            >
-              <option value="all">Tất cả cụm K-Means (4 cụm)</option>
-              {centroids.map(c => (
-                <option key={c.cluster_id} value={c.cluster_id}>
-                  Cụm {c.cluster_id}: {c.short_label} ({c.entity_count})
-                </option>
-              ))}
-            </select>
-          </div>
+          <CustomSelect
+            ariaLabel="Lọc theo cụm K-Means"
+            icon="cluster"
+            value={selectedClusterId === null ? "all" : String(selectedClusterId)}
+            onChange={val => setSelectedClusterId(val === "all" ? null : Number(val))}
+            options={clusterOptions}
+            highlightActive
+          />
         )}
 
         <label className="filter-search">

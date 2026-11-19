@@ -1,12 +1,13 @@
 import asyncio
 from contextlib import asynccontextmanager, suppress
 import logging
+from typing import Literal
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import Settings
-from app.jobs import JobAlreadyRunning, JobRunner
+from app.jobs import JobRunner
 from app.pipeline import Pipeline
 from app.schemas import Job, Results
 
@@ -37,7 +38,7 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
 
     app = FastAPI(
         title="Flight Ingestion Service",
-        description="Polls sliding-window batches from data-simulator, normalizes & deduplicates flights, and persists to DB.",
+        description="Polls AirLabs schedules and OpenWeather, updates flights and caches weather in DB.",
         version="1.1.0",
         root_path=settings.root_path,
         lifespan=lifespan,
@@ -53,14 +54,30 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
     @app.get("/health", tags=["operations"])
     async def health():
         runner: JobRunner = app.state.runner
+        deadline = runner.next_scheduled_run
         return {
             "status": "ok",
             "service": settings.service_name,
             "scheduler_enabled": settings.scheduler_enabled,
             "job_interval_seconds": settings.job_interval_seconds,
-            "simulator_base_url": settings.simulator_base_url,
+            "next_run_in_seconds": (
+                max(0, deadline - asyncio.get_running_loop().time()) if deadline is not None else None
+            ),
+            "job_running": runner.latest is not None and runner.latest.status == "running",
+            "source": "airlabs",
+            "provider_status": runner.pipeline.providers.last_status,
             "storage": runner.pipeline.repository.storage_type,
         }
+
+    @app.get("/providers", tags=["operations"])
+    async def providers():
+        store = app.state.runner.pipeline.providers.store
+        status, _ = await asyncio.to_thread(store.cached, "ingestion_status")
+        return {"status": status, "usage": await asyncio.to_thread(store.usage)}
+
+    @app.get("/raw", tags=["results"])
+    async def raw_flights(cursor: int = Query(0, ge=0), window_size: int = Query(12, ge=1, le=100)):
+        return await asyncio.to_thread(app.state.runner.pipeline.repository.raw_live_flights, cursor, window_size)
 
     @app.get("/results", response_model=Results, tags=["results"])
     @app.get("/flights", response_model=Results, tags=["results"])
@@ -73,6 +90,9 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
         sort: str | None = Query(default="time", description="Sort by: time, delay, distance"),
         limit: int = Query(default=5, ge=1, le=1000, description="Max records to return"),
         offset: int = Query(default=0, ge=0, description="Pagination offset"),
+        source: Literal["all", "airlabs", "legacy"] = "all",
+        cluster_id: int | None = Query(default=None, ge=0),
+        overview: bool = False,
     ):
         runner: JobRunner = app.state.runner
         return await asyncio.to_thread(
@@ -85,6 +105,9 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
             sort=sort,
             limit=limit,
             offset=offset,
+            source=source,
+            cluster_id=cluster_id,
+            include_overview=overview,
         )
 
     @app.delete("/flights", tags=["operations"])
@@ -97,20 +120,6 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
     @app.get("/jobs/latest", response_model=Job | None, tags=["operations"])
     async def latest_job():
         return app.state.runner.latest
-
-    @app.post("/run", response_model=Job, tags=["operations"])
-    async def run():
-        try:
-            return await app.state.runner.run_once()
-        except JobAlreadyRunning as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        except NotImplementedError as exc:
-            raise HTTPException(
-                status_code=501,
-                detail=app.state.runner.latest.model_dump(mode="json"),
-            ) from exc
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Pipeline failed: {exc}") from exc
 
     return app
 

@@ -70,6 +70,11 @@ class Pipeline:
         return train_and_save_model(self.settings)
 
     def _execute_sync(self) -> PipelineOutput:
+        if self.settings.live_api_mode:
+            rows = load_flight_rows(self.settings)
+            airports, _ = aggregate_features(rows)
+            if not airports or (len(airports) < self.settings.n_clusters and not Path(self.settings.model_path).is_file()):
+                return PipelineOutput(items=[], metadata={"ready": False, "reason": "insufficient_airports", "available_airports": len(airports), "required_airports": self.settings.n_clusters})
         bundle = self._load_or_build_bundle()
         scaler = bundle["scaler"]
         kmeans = bundle["kmeans"]

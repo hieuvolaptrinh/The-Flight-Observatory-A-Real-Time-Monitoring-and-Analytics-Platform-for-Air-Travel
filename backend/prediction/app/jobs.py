@@ -38,7 +38,7 @@ class JobRunner:
                 finished_at = datetime.now(timezone.utc)
                 # Publish only a complete result; preserve the last good result on failure.
                 self.results = Results(
-                    service=self.service, ready=True,
+                    service=self.service, ready=bool(output.metadata.get("ready", True)),
                     updated_at=finished_at, output=output,
                 )
                 job.status = "completed"
@@ -56,8 +56,13 @@ class JobRunner:
                 logger.info("Job finished: service=%s id=%s status=%s", self.service, job.id, job.status)
             return job
 
-    async def schedule(self, interval_seconds: float) -> None:
-        # First run happens after one interval; each next interval follows completion.
+    async def schedule(self, interval_seconds: float, run_on_startup: bool = False) -> None:
+        if run_on_startup:
+            try:
+                await self.run_once(trigger="startup")
+            except Exception as exc:
+                logger.warning("Startup prediction run failed: %s", exc)
+
         while True:
             await asyncio.sleep(interval_seconds)
             try:

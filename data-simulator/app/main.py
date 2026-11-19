@@ -1,24 +1,23 @@
 """
-Flight Data Simulator
-─────────────────────
+Flight Data Simulator (Raw DB + Chunked Queue Worker + Keyset Seek)
+───────────────────────────────────────────────────────────────────
 GET /flights
 
-Sliding window: mỗi lần gọi trả về WINDOW_SIZE records,
-cửa sổ tự trượt +SLIDE_STEP — giả lập dữ liệu động.
-Chỉ load file CSV đầu tiên khi khởi động.
+Sliding window: mỗi lần gọi trả về WINDOW_SIZE raw records từ bảng `raw_flights`
+bằng Keyset Seek (`WHERE file_id = :fid AND row_number > :start AND row_number <= :end`),
+cửa sổ tự trượt +SLIDE_STEP và lưu trạng thái bền vững vào bảng `raw_simulator_state`.
 """
+import asyncio
+from contextlib import asynccontextmanager, suppress
 import logging
 import sys
-from contextlib import asynccontextmanager
-from datetime import datetime, timezone
-from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from app import config
-from app.loader import load_records
+from app.loader import RawFlightStore
 
 logging.basicConfig(
     level=logging.INFO,
@@ -28,55 +27,56 @@ logging.basicConfig(
 log = logging.getLogger("simulator")
 
 
-# ── State (in-memory) ───────────────────────────────────────────────────
-class _State:
-    records: list[dict] = []
-    window_start: int = 0   # vị trí đầu cửa sổ hiện tại
+class _RuntimeState:
+    store: RawFlightStore | None = None
+    worker_task: asyncio.Task | None = None
 
 
-_state = _State()
+_runtime = _RuntimeState()
 
 
-def _first_csv(csv_path: str) -> str:
-    """Trả về đường dẫn file CSV đầu tiên trong thư mục (hoặc chính file đó)."""
-    p = Path(csv_path)
-    if p.is_file():
-        return str(p)
-    files = sorted(p.glob("*.csv"))
-    if not files:
-        raise FileNotFoundError(f"Không tìm thấy *.csv trong: {csv_path}")
-    log.info("Tìm thấy %d file CSV, chỉ load file đầu: %s", len(files), files[0].name)
-    return str(files[0])
-
-
-# ── Lifespan: đọc CSV 1 lần ────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     try:
-        csv_file = _first_csv(config.CSV_PATH)
-        log.info("Đang tải: %s …", csv_file)
-        _state.records = load_records(csv_file)
-        _state.window_start = 0
-        log.info(
-            "✓ Tải xong: %d records | window=%d | slide=%d",
-            len(_state.records), config.WINDOW_SIZE, config.SLIDE_STEP,
+        store = RawFlightStore(
+            csv_path=config.CSV_PATH,
+            database_url=config.DATABASE_URL,
+            window_size=config.WINDOW_SIZE,
+            slide_step=config.SLIDE_STEP,
+            chunk_size=config.CHUNK_SIZE,
+            queue_maxsize=config.QUEUE_MAXSIZE,
+            max_seed_rows=config.MAX_SEED_ROWS,
         )
+        initial_loaded = await asyncio.to_thread(store.seed_initial_chunk_sync)
+        _runtime.store = store
+        log.info(
+            "✓ Simulator khởi tạo Raw DB (%s): loaded=%d/%d | window=%d | slide=%d",
+            store.storage_type,
+            initial_loaded,
+            store.total_rows,
+            config.WINDOW_SIZE,
+            config.SLIDE_STEP,
+        )
+        _runtime.worker_task = asyncio.create_task(store.run_background_queue_worker())
     except Exception as e:
-        log.critical("Không thể tải dữ liệu: %s", e)
+        log.critical("Không thể khởi tạo Raw DB Simulator: %s", e)
         raise SystemExit(1) from e
-    yield
+
+    try:
+        yield
+    finally:
+        if _runtime.worker_task and not _runtime.worker_task.done():
+            _runtime.worker_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await _runtime.worker_task
 
 
-# ── App ─────────────────────────────────────────────────────────────────
 app = FastAPI(
-    title="Flight Data Simulator",
-    version="1.0.0",
+    title="Flight Data Simulator (Raw DB Engine)",
+    version="2.0.0",
     description=(
-        "Trả về cửa sổ trượt dữ liệu chuyến bay, giả lập luồng data động.\n\n"
-        "Mỗi lần gọi `GET /flights`, cửa sổ tự trượt +`SLIDE_STEP` records:\n"
-        "- 20 record mới xuất hiện ở cuối\n"
-        "- 20 record cũ biến mất ở đầu\n\n"
-        "**Simulator không tạo dữ liệu delay và không gọi ML model.**"
+        "Nạp dữ liệu CSV thô theo từng chunk qua `asyncio.Queue` vào Raw DB (`raw_source_files`, `raw_flights`, `raw_simulator_state`).\n\n"
+        "Mỗi lần gọi `GET /flights`, truy vấn Keyset Seek $O(\\log N)$ trên `idx_raw_flights_seek` và trượt cửa sổ +`SLIDE_STEP`."
     ),
     lifespan=lifespan,
 )
@@ -89,78 +89,52 @@ app.add_middleware(
 )
 
 
-# ── Schema ──────────────────────────────────────────────────────────────
 class FlightsResponse(BaseModel):
     fetched_at: str       # thời điểm gọi API (UTC thực)
     window_start: int     # index đầu cửa sổ trong dataset
     window_end: int       # index cuối cửa sổ (exclusive)
     window_size: int      # số record trả về
     slide_step: int       # bước trượt mỗi lần gọi
-    total: int            # tổng record trong dataset
+    total: int            # tổng record hiện có trong raw_flights
     data: list[dict]
 
 
-# ── Endpoint ─────────────────────────────────────────────────────────────
 @app.get("/flights", response_model=FlightsResponse)
-def get_flights(
+async def get_flights(
     window_size: int = Query(
         default=None, ge=1, le=1000,
-        description="Kích thước cửa sổ (mặc định = WINDOW_SIZE env, default 100)"
+        description="Kích thước cửa sổ (mặc định = WINDOW_SIZE env, default 100)",
     ),
     slide_step: int = Query(
         default=None, ge=0, le=500,
-        description="Bước trượt mỗi lần gọi (mặc định = SLIDE_STEP env, default 20)"
+        description="Bước trượt mỗi lần gọi (mặc định = SLIDE_STEP env, default 20)",
     ),
-    start: int | None = Query(default=None, ge=0, description="Vị trí đọc do client quản lý. Không dịch cửa sổ chung."),
+    start: int | None = Query(
+        default=None, ge=0,
+        description="Vị trí đọc do client quản lý. Không dịch cửa sổ chung.",
+    ),
 ):
     """
-    Trả về cửa sổ trượt gồm `window_size` records.
-    Sau mỗi lần gọi, cửa sổ tự dịch chuyển +`slide_step` về phía sau:
-    - `slide_step` record mới xuất hiện ở cuối window
-    - `slide_step` record cũ biến mất ở đầu window
-
+    Trả về cửa sổ trượt gồm `window_size` raw records từ bảng `raw_flights`.
+    Sau mỗi lần gọi, cửa sổ tự dịch chuyển +`slide_step` trong bảng `raw_simulator_state`.
     Hết dataset → tự wrap về đầu (vòng lặp liên tục).
     """
-    size  = window_size or config.WINDOW_SIZE
-    step  = slide_step  if slide_step is not None else config.SLIDE_STEP
-    total = len(_state.records)
-
-    if total == 0:
-        raise HTTPException(status_code=503, detail="No flights loaded")
-    explicit_start = start is not None
-    if explicit_start:
-        size = min(size, total)
-    start = (start if explicit_start else _state.window_start) % total
-    end   = start + size
-
-    # Lấy dữ liệu (wrap nếu cần)
-    if end <= total:
-        batch = _state.records[start:end]
-    else:
-        batch = _state.records[start:] + _state.records[: end - total]
-
-    # Trượt cửa sổ cho lần gọi tiếp theo
-    if not explicit_start:
-        _state.window_start = (start + step) % total
-
-    return FlightsResponse(
-        fetched_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        window_start=start,
-        window_end=end % total if end > total else end,
-        window_size=len(batch),
-        slide_step=step,
-        total=total,
-        data=batch,
-    )
+    if _runtime.store is None:
+        raise HTTPException(status_code=503, detail="Simulator store not initialized")
+    try:
+        payload = await asyncio.to_thread(
+            _runtime.store.get_window,
+            window_size=window_size,
+            slide_step=slide_step,
+            start=start,
+        )
+        return FlightsResponse(**payload)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.get("/", include_in_schema=False)
-def health():
-    total = len(_state.records)
-    return {
-        "status": "ok",
-        "total_records": total,
-        "window_start": _state.window_start,
-        "window_size": config.WINDOW_SIZE,
-        "slide_step": config.SLIDE_STEP,
-    }
+async def health():
+    if _runtime.store is None:
+        raise HTTPException(status_code=503, detail="Simulator store not initialized")
+    return await asyncio.to_thread(_runtime.store.get_status)

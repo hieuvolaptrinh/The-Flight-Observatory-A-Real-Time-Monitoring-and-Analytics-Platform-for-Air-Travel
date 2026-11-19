@@ -53,7 +53,7 @@ export function PcaScatterChart({
         role="img"
         aria-label="Không gian phân cụm PCA 2 chiều (PCA X, PCA Y)"
       >
-        <rect x="0" y="0" width={W} height={H} rx="8" fill="#f8fafc" />
+        <rect x="0" y="0" width={W} height={H} rx="8" fill="#ffffff" />
         <line x1={padX} x2={W - padX} y1={zeroY} y2={zeroY} stroke="#cbd5e1" strokeDasharray="3 3" />
         <line x1={zeroX} x2={zeroX} y1={padY} y2={H - padY} stroke="#cbd5e1" strokeDasharray="3 3" />
         <text x={W - padX} y={zeroY - 5} textAnchor="end" fill="#64748b" fontSize="8.5">

@@ -1,12 +1,12 @@
 import Link from "next/link";
 import { Icon } from "./icons";
+import { IngestionCountdown } from "./ingestion-countdown";
 
 interface TopHeaderProps {
   pageTitle: string;
   pageSubtitle: string;
   apiMode: "gateway" | "ingestion" | "demo";
   busy: boolean;
-  onTriggerIngestion: () => void;
   onTriggerClustering: () => void;
   onExportCsv: () => void;
 }
@@ -16,7 +16,6 @@ export function TopHeader({
   pageSubtitle,
   apiMode,
   busy,
-  onTriggerIngestion,
   onTriggerClustering,
   onExportCsv,
 }: TopHeaderProps) {
@@ -25,7 +24,7 @@ export function TopHeader({
       <div className="top-brand-group">
         <Link href="/flights" className="brand-logo">
           <span className="brand-mark">
-            <Icon name="plane" size={18} />
+            <img src="/logo.png" alt="FlightLens Logo" className="brand-logo-img" />
           </span>
           <strong>
             flightlens<span className="brand-period">+</span>
@@ -60,15 +59,7 @@ export function TopHeader({
             <Icon name="download" size={15} />
             Xuất CSV
           </button>
-          <button
-            type="button"
-            className="button primary-action"
-            onClick={onTriggerIngestion}
-            disabled={busy}
-          >
-            <Icon name="refresh" size={15} />
-            Nạp batch mới (POST /run)
-          </button>
+          <IngestionCountdown direct={apiMode === "ingestion"} />
         </div>
       </div>
     </header>

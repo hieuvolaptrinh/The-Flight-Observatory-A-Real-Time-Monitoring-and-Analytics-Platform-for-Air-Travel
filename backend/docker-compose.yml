@@ -20,26 +20,6 @@ x-postgres-client: &postgres-client
   PGPASSWORD: "${ANALYTICS_POSTGRES_PASSWORD:-analytics}"
 
 services:
-  data-simulator:
-    build: ../data-simulator
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:${SIMULATOR_PORT:-2003}:8000"
-    environment:
-      CSV_PATH: /app/data/T_ONTIME_REPORTING_1.csv
-      WINDOW_SIZE: "${SIMULATOR_WINDOW_SIZE:-100}"
-      SLIDE_STEP: "${SIMULATOR_SLIDE_STEP:-20}"
-    volumes:
-      - ../data-simulator/data:/app/data:ro
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/', timeout=5)"]
-      interval: 15s
-      timeout: 5s
-      start_period: 35s
-      retries: 5
-    networks:
-      - backend
-
   gateway:
     build: ./gateway
     restart: unless-stopped
@@ -81,6 +61,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      ingestion:
+        condition: service_healthy
     env_file:
       - path: ./analytics/.env
         required: false
@@ -103,7 +85,6 @@ services:
         condition: service_healthy
     volumes:
       - clustering_models:/service/models
-      - ../data-simulator/data:/data-source:ro
     environment:
       <<: *postgres-client
       SERVICE_NAME: clustering
@@ -111,7 +92,7 @@ services:
       SCHEDULER_ENABLED: "${CLUSTERING_SCHEDULER_ENABLED:-true}"
       RUN_ON_STARTUP: "${CLUSTERING_RUN_ON_STARTUP:-true}"
       JOB_INTERVAL_SECONDS: "${CLUSTERING_INTERVAL_SECONDS:-86400}"
-      FALLBACK_CSV_PATH: /data-source/T_ONTIME_REPORTING_1.csv
+      LIVE_API_MODE: "true"
       MODEL_PATH: /service/models/clustering_bundle.joblib
 
   prediction:
@@ -119,11 +100,22 @@ services:
     build: ./prediction
     ports:
       - "127.0.0.1:${PREDICTION_PORT:-2007}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ingestion:
+        condition: service_healthy
+    volumes:
+      - prediction_models:/service/models
     environment:
+      <<: *postgres-client
       SERVICE_NAME: prediction
       ROOT_PATH: /api/prediction
-      SCHEDULER_ENABLED: "${PREDICTION_SCHEDULER_ENABLED:-false}"
+      SCHEDULER_ENABLED: "${PREDICTION_SCHEDULER_ENABLED:-true}"
+      RUN_ON_STARTUP: "${PREDICTION_RUN_ON_STARTUP:-true}"
       JOB_INTERVAL_SECONDS: "${PREDICTION_INTERVAL_SECONDS:-300}"
+      LIVE_API_MODE: "true"
+      MODEL_PATH: /service/models/prediction_bundle.joblib
 
   ingestion:
     <<: *worker
@@ -133,10 +125,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      data-simulator:
-        condition: service_healthy
-    volumes:
-      - ../data-simulator/data:/data-source:ro
     environment:
       <<: *postgres-client
       SERVICE_NAME: ingestion
@@ -144,10 +132,19 @@ services:
       SCHEDULER_ENABLED: "${INGESTION_SCHEDULER_ENABLED:-true}"
       RUN_ON_STARTUP: "${INGESTION_RUN_ON_STARTUP:-true}"
       JOB_INTERVAL_SECONDS: "${INGESTION_INTERVAL_SECONDS:-300}"
-      SIMULATOR_BASE_URL: "${SIMULATOR_BASE_URL:-http://data-simulator:8000}"
-      INGESTION_BATCH_SIZE: "${INGESTION_BATCH_SIZE:-5}"
-      FALLBACK_CSV_PATH: /data-source/T_ONTIME_REPORTING_1.csv
-      TRIGGER_DOWNSTREAM_URLS: "${TRIGGER_DOWNSTREAM_URLS-http://clustering:8000/run}"
+      AIRLABS_API_KEY: "${AIRLABS_API_KEY:-}"
+      AIRLABS_ACCOUNTS: '${AIRLABS_ACCOUNTS:-}'
+      AIRLABS_AIRPORTS: "${AIRLABS_AIRPORTS:-JFK}"
+      AIRLABS_MAX_PAGES: "${AIRLABS_MAX_PAGES:-1}"
+      AIRLABS_MONTHLY_BUDGET: "${AIRLABS_MONTHLY_BUDGET:-800}"
+      AIRLABS_RESET_DAY: "${AIRLABS_RESET_DAY:-1}"
+      OPENWEATHER_API_KEY: "${OPENWEATHER_API_KEY:-}"
+      OPENWEATHER_MONTHLY_BUDGET: "${OPENWEATHER_MONTHLY_BUDGET:-10000}"
+      OPENWEATHER_RESET_DAY: "${OPENWEATHER_RESET_DAY:-1}"
+      WEATHER_CACHE_SECONDS: "${WEATHER_CACHE_SECONDS:-900}"
+      LIVE_API_MODE: "true"
+      TRIGGER_DOWNSTREAM_URLS: "${TRIGGER_DOWNSTREAM_URLS:-}"
 
 volumes:
   clustering_models:
+  prediction_models:

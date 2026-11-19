@@ -4,6 +4,8 @@ import logging
 
 from fastapi import FastAPI, HTTPException
 
+from fastapi.middleware.cors import CORSMiddleware
+
 from app.config import Settings
 from app.jobs import JobAlreadyRunning, JobRunner
 from app.pipeline import Pipeline
@@ -17,10 +19,16 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        runner = JobRunner(settings.service_name, pipeline if pipeline is not None else Pipeline())
+        active_pipeline = pipeline if pipeline is not None else Pipeline(settings=settings)
+        runner = JobRunner(settings.service_name, active_pipeline)
         app.state.runner = runner
+
+        # Optionally run an initial inference job on startup
+        if settings.run_on_startup:
+            asyncio.create_task(runner.run_once(trigger="startup"))
+
         task = (
-            asyncio.create_task(runner.schedule(settings.job_interval_seconds))
+            asyncio.create_task(runner.schedule(settings.job_interval_seconds, run_on_startup=False))
             if settings.scheduler_enabled else None
         )
         try:
@@ -32,11 +40,18 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
                     await task
 
     app = FastAPI(
-        title=settings.service_name,
-        description="Flight delay service scaffold. No database or production pipeline is configured.",
-        version="0.1.0",
+        title="Flight Delay Prediction & Classification Service",
+        description="Machine Learning regression (delay minutes) and classification (risk probability) with real weather features.",
+        version="1.0.0",
         root_path=settings.root_path,
         lifespan=lifespan,
+    )
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
     )
 
     @app.get("/health", tags=["operations"])
