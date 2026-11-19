@@ -1,6 +1,6 @@
 # Flight Observatory — Live APIs
 
-Luồng mặc định: **AirLabs schedules + OpenWeather → Ingestion → PostgreSQL → Analytics / Clustering / Prediction → Frontend**.
+Luồng mặc định: **AirLabs schedules + OpenWeather → Ingestion lưu `flight_raw_db` → chuẩn hóa vào `flight_processed_db` → Analytics / Clustering / Prediction → Frontend**.
 Không khởi động simulator, không mount CSV và không fallback sang CSV trong chế độ live.
 
 ## 1. Cấu hình
@@ -60,12 +60,14 @@ Mỗi sân bay chỉ gán một lần. Key dùng chung quota phải cùng `quota
 
 ## 4. Database và dữ liệu
 
+PostgreSQL có hai database: `flight_raw_db` giữ từng response API trước xử lý; `flight_processed_db` giữ dữ liệu đã chuẩn hóa và kết quả phân tích. Cấu hình ingestion bằng `RAW_DATABASE_URL` và `DATABASE_URL`; các service còn lại dùng database đã xử lý. Xem [hướng dẫn migration và đối chiếu raw/processed](database/README.md) khi đang có dữ liệu trong `analytics_db`.
+
 Ingestion tự chạy migration idempotent lúc khởi động cho DB hiện có:
 
 - Cho phép `delay_minutes` và `is_delayed` là NULL; trạng thái `unknown`.
 - Thêm `provider_cache`, `provider_usage`, `airport_weather`, `live_flight_details` và số lượng cập nhật batch.
 - Giữ dữ liệu cũ. Dữ liệu API có khóa bắt đầu bằng `airlabs:`; không trộn định danh với CSV.
-- Upsert chuyến bay; bảng raw lưu snapshot mới nhất, không phải lịch sử mọi response.
+- Database raw giữ lịch sử các response từ khi tách database, gồm cả dòng bị loại/trùng; database đã xử lý upsert chuyến bay. JSON cũ được nhập với nhãn `legacy_snapshot` vì không thể khôi phục các response đã bị ghi đè trước đây.
 
 Airports API được cache 30 ngày, thời tiết theo sân bay 15 phút. Khoảng cách là great-circle ước tính theo miles; thời gian bay tính từ giờ lịch UTC hoặc giờ địa phương + IANA timezone. Khi API không cấp tọa độ/múi giờ, trường không tính được để NULL. Không gọi dữ liệu địa điểm cho mỗi chuyến nếu đã có cache.
 
@@ -99,6 +101,6 @@ python -m pip install -r requirements.txt pytest pyyaml
 python -m pytest ingestion/tests -q
 ```
 
-Test dùng HTTP mock, không tiêu quota hoặc cần key thật. Kiểm thử PostgreSQL tùy chọn bằng `TEST_DATABASE_URL` trong một database test riêng. Không dùng DB chứa dữ liệu cần giữ.
+Test dùng HTTP mock, không tiêu quota hoặc cần key thật. Kiểm thử PostgreSQL tùy chọn bằng `TEST_DATABASE_URL` và `TEST_RAW_DATABASE_URL` trong hai database có tên bắt đầu bằng `test`. Không dùng DB chứa dữ liệu cần giữ.
 
 Tài liệu nguồn: https://airlabs.co/docs/schedules · https://airlabs.co/docs/airports · https://openweathermap.org/api/current

@@ -15,9 +15,9 @@ x-postgres-client: &postgres-client
   DATABASE_URL: "postgresql://"
   PGHOST: postgres
   PGPORT: "5432"
-  PGDATABASE: "${ANALYTICS_POSTGRES_DB:-analytics_db}"
-  PGUSER: "${ANALYTICS_POSTGRES_USER:-analytics}"
-  PGPASSWORD: "${ANALYTICS_POSTGRES_PASSWORD:-analytics}"
+  PGDATABASE: "${PROCESSED_POSTGRES_DB:-flight_processed_db}"
+  PGUSER: "${ANALYTICS_POSTGRES_USER:-root}"
+  PGPASSWORD: "${ANALYTICS_POSTGRES_PASSWORD:-123456}"
 
 services:
   gateway:
@@ -127,6 +127,7 @@ services:
         condition: service_healthy
     environment:
       <<: *postgres-client
+      RAW_DATABASE_URL: "postgresql:///?dbname=${RAW_POSTGRES_DB:-flight_raw_db}"
       SERVICE_NAME: ingestion
       ROOT_PATH: /api/ingestion
       SCHEDULER_ENABLED: "${INGESTION_SCHEDULER_ENABLED:-true}"

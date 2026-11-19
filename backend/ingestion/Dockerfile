@@ -12,6 +12,7 @@ RUN pip install --no-cache-dir -r requirements.txt \
     && chown -R appuser:appuser /service
 
 COPY --chown=appuser:appuser app ./app
+COPY --chown=appuser:appuser db/raw_schema.sql ./db/raw_schema.sql
 USER appuser
 
 EXPOSE 8000

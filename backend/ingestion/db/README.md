@@ -20,14 +20,14 @@ Khóa chính nội bộ là `flight_id`. Khóa chống trùng gồm ngày, hãng
 
 ## Cài và nạp CSV
 
-Chạy từ thư mục gốc repo bằng PowerShell. Ví dụ dùng thông tin PostgreSQL mặc định của Compose. Nếu đã đặt `ANALYTICS_POSTGRES_USER` hoặc `ANALYTICS_POSTGRES_DB` trong `backend/.env`, thay `analytics` sau `-U` hoặc `analytics_db` sau `-d` tương ứng.
+Chạy từ thư mục gốc repo bằng PowerShell. Ví dụ dùng thông tin PostgreSQL mặc định của Compose. Nếu đã đặt `ANALYTICS_POSTGRES_USER` hoặc `PROCESSED_POSTGRES_DB` trong `backend/.env`, thay `analytics` sau `-U` hoặc `flight_processed_db` sau `-d` tương ứng.
 
 Tên database, user và mật khẩu được dùng để khởi tạo PostgreSQL khi volume còn trống. Khi tái sử dụng volume, dùng thông tin của lần khởi tạo đó.
 
 ```powershell
 docker compose -f backend/database/docker-compose.yml up -d --wait
-docker compose -f backend/database/docker-compose.yml exec -T postgres psql -X -v csv_path=/data-source/T_ONTIME_REPORTING_1.csv -U analytics -d analytics_db -f /opt/analytics-db/import_csv.sql
-docker compose -f backend/database/docker-compose.yml exec postgres psql -X -U analytics -d analytics_db
+docker compose -f backend/database/docker-compose.yml exec -T postgres psql -X -v csv_path=/data-source/T_ONTIME_REPORTING_1.csv -U root -d flight_processed_db -f /opt/analytics-db/import_csv.sql
+docker compose -f backend/database/docker-compose.yml exec postgres psql -X -U root -d flight_processed_db
 ```
 
 Pipeline Ingestion nạp dữ liệu Simulator vào `flight_data.flights` ngay khi khởi động, rồi lặp lại mỗi 300 giây với mặc định 5 chuyến một lô. Con trỏ nằm trong `flight_data.simulator_offsets` và được commit cùng các chuyến. Import CSV là cách nạp nhanh lịch sử cho demo. `csv_path` trỏ đến tệp trong thư mục `/data-source` được mount vào container `postgres`.

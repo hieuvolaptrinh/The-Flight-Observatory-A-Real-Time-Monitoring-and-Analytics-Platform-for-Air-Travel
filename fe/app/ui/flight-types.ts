@@ -194,6 +194,8 @@ export interface PredictionItem {
 
 export interface RawFlightItem {
   RAW_ID: number;
+  processing_status?: "pending" | "processed" | "rejected" | "duplicate";
+  processing_error?: string | null;
   ROW_NUMBER: number;
   DAY_OF_WEEK: string;
   FL_DATE: string;

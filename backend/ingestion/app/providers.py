@@ -158,13 +158,15 @@ def normalize_weather(raw, fetched_at):
 
 
 class LiveProviders:
-    def __init__(self, settings, repository, transport=None):
+    def __init__(self, settings, repository, transport=None, raw_store=None):
         self.settings, self.store = settings, LiveStore(repository)
+        from app.raw_store import RawStore
+        self.raw_store = raw_store or RawStore(repository.database_url, settings.raw_database_url)
         self.accounts = accounts_from_settings(settings)
         self.transport = transport
         self.last_status = {"state": "waiting", "warnings": []}
 
-    async def request(self, client, provider, endpoint, params, group, budget, reset_day, credential):
+    async def request(self, client, provider, endpoint, params, group, budget, reset_day, credential, *, airport_code=None):
         now = datetime.now(timezone.utc)
         credential_id = hashlib.sha256(credential.encode()).hexdigest()[:16]
         block_key = f"block:{provider}:{group}"
@@ -174,19 +176,29 @@ class LiveProviders:
         allowed = await asyncio.to_thread(self.store.reserve, f"{provider}:{group}", budget, reset_day)
         if not allowed:
             raise ProviderError(f"{provider}: configured request budget exhausted")
-        code, payload = None, None
+        code, payload, response_id = None, None, None
         try:
             response = await client.get(endpoint, params=params)
+        except httpx.HTTPError:
+            code = "network_or_response_error"
+        else:
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = response.text
+            # This commit must finish before mapping, validation or unit conversion.
+            response_id = await asyncio.to_thread(
+                self.raw_store.archive, provider, endpoint,
+                {**params, **({"airport_code": airport_code} if airport_code else {})},
+                payload, response.status_code, credential=credential,
+            )
             if response.status_code >= 400:
                 code = str(response.status_code)
             else:
-                payload = response.json()
                 if not isinstance(payload, dict):
                     code = "invalid_response"
                 elif payload.get("error"):
                     code = str(payload["error"].get("code", "provider_error")) if isinstance(payload["error"], dict) else "provider_error"
-        except (httpx.HTTPError, ValueError):
-            code = "network_or_response_error"
         if code:
             # Never retain provider error messages or request URLs: they may echo credentials.
             known = {"401", "403", "429", "unknown_api_key", "expired_api_key", "minute_limit_exceeded", "hour_limit_exceeded", "month_limit_exceeded"}
@@ -201,21 +213,21 @@ class LiveProviders:
                 until = (period.replace(day=28) + timedelta(days=4)).replace(day=reset_day)
             await asyncio.to_thread(self.store.cache, block_key, {"until": until.timestamp(), "credential": credential_id if credential_block else None})
             raise ProviderError(f"{provider}: {safe}")
-        return payload
+        return payload, response_id
 
     async def airlabs(self, client, account, endpoint, params):
-        payload = await self.request(client, "airlabs", f"https://airlabs.co/api/v9/{endpoint}",
+        payload, response_id = await self.request(client, "airlabs", f"https://airlabs.co/api/v9/{endpoint}",
             {**params, "api_key": account.key}, account.quota_group, account.budget, account.reset_day, account.key)
         if not isinstance(payload.get("response"), list):
             raise ProviderError("airlabs: response is not a list")
-        return payload
+        return payload, response_id
 
     async def airport(self, client, account, code):
         key = f"airport:{code}"
         cached, epoch = await asyncio.to_thread(self.store.cached, key)
         if cached is not None and datetime.now(timezone.utc).timestamp()-epoch < 30*86400:
             return cached
-        payload = await self.airlabs(client, account, "airports", {"iata_code": code})
+        payload, _ = await self.airlabs(client, account, "airports", {"iata_code": code})
         row = next((r for r in payload["response"] if r.get("iata_code") == code), {})
         await asyncio.to_thread(self.store.cache, key, row)
         return row
@@ -228,10 +240,11 @@ class LiveProviders:
         if cached and datetime.now(timezone.utc).timestamp()-epoch < self.settings.weather_cache_seconds:
             return
         secret = self.settings.openweather_api_key.get_secret_value()
-        raw = await self.request(client, "openweather", "https://api.openweathermap.org/data/2.5/weather",
+        raw, response_id = await self.request(client, "openweather", "https://api.openweathermap.org/data/2.5/weather",
             {"lat": airport["lat"], "lon": airport["lng"], "units": "metric", "appid": secret},
-            "default", self.settings.openweather_monthly_budget, self.settings.openweather_reset_day, secret)
+            "default", self.settings.openweather_monthly_budget, self.settings.openweather_reset_day, secret, airport_code=code)
         normalized = normalize_weather(raw, datetime.now(timezone.utc).isoformat())
+        normalized["raw_response_id"] = response_id
         await asyncio.to_thread(self.store.weather, code, normalized)
         await asyncio.to_thread(self.store.cache, key, normalized)
 
@@ -248,10 +261,11 @@ class LiveProviders:
                     # A failed airport must not prevent processing another account/airport.
                     try:
                         for page in range(self.settings.airlabs_max_pages):
-                            payload = await self.airlabs(client, account, "schedules", {"dep_iata": code, "limit": 50, "offset": page*50})
+                            payload, response_id = await self.airlabs(client, account, "schedules", {"dep_iata": code, "limit": 50, "offset": page*50})
                             pages += 1
-                            for raw in payload["response"]:
+                            for row_index, raw in enumerate(payload["response"]):
                                 if not isinstance(raw, dict) or raw.get("dep_iata") != code:
+                                    await asyncio.to_thread(self.raw_store.mark, response_id, row_index, "rejected", reason="Invalid row or departure airport outside requested scope")
                                     continue
                                 origin, destination = {}, {}
                                 for airport_code in (code, raw.get("arr_iata")):
@@ -268,11 +282,18 @@ class LiveProviders:
                                 try:
                                     record = normalize_schedule(raw, origin, destination, fetched)
                                 except (ValueError, TypeError, KeyError, OverflowError):
+                                    await asyncio.to_thread(self.raw_store.mark, response_id, row_index, "rejected", reason="Invalid schedule or timezone")
                                     warnings.append("Skipped a flight with invalid schedule/timezone")
                                     continue
                                 if record and record["FLIGHT_KEY"] not in seen:
+                                    record["_details"].update(raw_response_id=response_id, raw_row_index=row_index)
                                     seen.add(record["FLIGHT_KEY"])
                                     rows.append(record)
+                                else:
+                                    await asyncio.to_thread(self.raw_store.mark, response_id, row_index,
+                                        "duplicate" if record else "rejected",
+                                        reason=None if record else "Missing or invalid required flight fields",
+                                        flight_key=record["FLIGHT_KEY"] if record else None)
                             more = payload.get("request", {}).get("has_more")
                             if more is None:
                                 more = len(payload["response"]) == 50

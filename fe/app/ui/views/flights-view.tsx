@@ -401,9 +401,9 @@ export function FlightsView({
           <div className="raw-db-banner">
             <span className="raw-db-badge">BRONZE LAYER · RAW DB</span>
             <div>
-              <strong>Bảng dữ liệu thô nguyên bản: <code>live_flight_details</code></strong>
+              <strong>Dữ liệu thô từ API, trước khi làm sạch</strong>
               <span>
-                {" "}— Snapshot mới nhất của mỗi chuyến bay. Các cột được ánh xạ từ response AirLabs.
+                {" "}— Giữ từng lần lấy dữ liệu, gồm cả bản ghi trùng và bản ghi bị loại khi xử lý.
               </span>
             </div>
           </div>
@@ -429,7 +429,7 @@ export function FlightsView({
                 {rawLoading ? (
                   <tr>
                     <td colSpan={9} style={{ textAlign: "center", padding: "40px", color: "var(--muted)" }}>
-                      Đang truy vấn dữ liệu thô từ bảng <code>live_flight_details</code>...
+                      Đang tải dữ liệu thô từ API...
                     </td>
                   </tr>
                 ) : (
@@ -461,7 +461,10 @@ export function FlightsView({
                         {r.DISTANCE ? `${r.DISTANCE} dặm` : "—"} / {r.CRS_ELAPSED_TIME ? `${r.CRS_ELAPSED_TIME}p` : "—"}
                       </td>
                       <td>
-                        <span className="raw-tag">AirLabs</span>
+                        <span className="raw-tag">{r.processing_status === "processed" ? "Đã xử lý"
+                          : r.processing_status === "rejected" ? "Bị loại"
+                          : r.processing_status === "duplicate" ? "Trùng lặp" : "Chờ xử lý"}</span>
+                        {r.processing_error && <small className="muted">{r.processing_error}</small>}
                       </td>
                     </tr>
                   ))

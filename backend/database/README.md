@@ -1,34 +1,79 @@
-# PostgreSQL cho Plant-Delay
+# PostgreSQL: dữ liệu thô và dữ liệu đã xử lý
 
-Từ thư mục gốc repo, chạy riêng PostgreSQL. Compose dùng image PostgreSQL 16 có sẵn và tạo schema trong lần khởi tạo volume đầu tiên.
+Một PostgreSQL container, cổng Windows `127.0.0.1:2001`, chứa hai database:
 
-```powershell
-docker compose -f backend/database/docker-compose.yml up -d --wait
-```
+| Database | Nội dung |
+|---|---|
+| `flight_raw_db` | Response API trước khi kiểm tra, làm sạch, loại trùng và đổi đơn vị |
+| `flight_processed_db` | Dữ liệu ingestion đã xử lý và kết quả Analytics / Clustering / Prediction |
 
-Khi chạy Ingestion hoặc Analytics bằng Miniconda, đặt biến sau trong terminal của từng service:
+Luồng: API → commit vào `flight_raw_db` → ingestion chuẩn hóa → commit vào `flight_processed_db` → các service phân tích. Nếu ghi raw thất bại, không ghi dữ liệu đã xử lý. Nếu xử lý thất bại, raw vẫn còn để kiểm tra. API key được loại khỏi thông tin request/response đã lưu.
 
-```powershell
-$env:DATABASE_URL = "postgresql://analytics:analytics@127.0.0.1:2001/analytics_db"
-```
+## Chạy PostgreSQL mới
 
-Nếu đã cấu hình `backend/.env`, dùng `--env-file backend/.env` cho lệnh chạy Compose riêng và dùng thông tin kết nối tương ứng. Các service chạy trong Docker kết nối qua `postgres:5432`.
-
-### Chuyển từ container cũ
-
-PostgreSQL riêng dùng lại volume Compose `analytics_data`. Nếu PostgreSQL cũ đang chạy trong container `ingestion` hoặc `analytics`, dừng container cũ trước khi chạy Compose database để giải phóng volume:
+Từ thư mục gốc repo:
 
 ```powershell
-docker compose -f backend/docker-compose.yml stop ingestion analytics
+docker compose --env-file backend/.env -f backend/database/docker-compose.yml up -d --wait
 ```
 
-Nếu từng dùng cấu hình `main` với volume `postgres_data` và database `flight_db`, dữ liệu đó vẫn nằm trong volume cũ. Cần sao lưu và khôi phục các bảng cần giữ vào `analytics_db` khi chuyển dữ liệu giữa hai volume.
+Compose dùng `PROCESSED_POSTGRES_DB=flight_processed_db` và `RAW_POSTGRES_DB=flight_raw_db`, tài khoản `root`, mật khẩu `123456`. Dữ liệu vẫn nằm trong volume `flight-delay-backend_analytics_data`; giữ tên volume này để dùng lại dữ liệu cũ.
 
-PostgreSQL áp dụng `schema.sql` tự động khi tạo volume mới. Với volume có sẵn từ phiên bản schema cũ, có thể áp dụng lại script sau khi container đã chạy:
+Script `init-databases.sh` tạo hai database và schema khi khởi tạo volume mới. Với volume đang có database `analytics_db`, thực hiện migration bên dưới; restart container không chạy lại init script.
+
+## Chuyển dữ liệu cũ
+
+Dừng các worker Ingestion, Analytics, Clustering, Prediction trước khi migration. Sao lưu PostgreSQL bằng `pg_dump` trước khi đổi tên. Không dùng `docker compose down -v`.
+
+Cập nhật các file `.env` theo `.env.example`: `DATABASE_URL` và `SOURCE_DATABASE_URL` dùng `flight_processed_db`; riêng ingestion thêm `RAW_DATABASE_URL` dùng `flight_raw_db`. Sau đó chạy trong môi trường Python backend:
 
 ```powershell
-docker compose -f backend/database/docker-compose.yml exec -T postgres psql -X -v ON_ERROR_STOP=1 -U analytics -d analytics_db -f /docker-entrypoint-initdb.d/01-schema.sql
-docker compose -f backend/database/docker-compose.yml exec -T postgres psql -X -v ON_ERROR_STOP=1 -U analytics -d analytics_db -f /docker-entrypoint-initdb.d/02-legacy.sql
+python backend/database/migrate_databases.py
+docker compose --env-file backend/.env -f backend/database/docker-compose.yml up -d --wait
 ```
 
-Xem [cách nạp CSV](../ingestion/db/README.md) và [bảng cổng backend](../README.md).
+Script đổi tên `analytics_db` thành `flight_processed_db`, giữ nguyên các bảng/dữ liệu hiện có; tạo `flight_raw_db` và nhập các JSON gốc còn lưu trong `live_flight_details` và `airport_weather`. Chạy lại script không nhân đôi các bản ghi đã nhập. Bản ghi nhập có `archive_kind='legacy_snapshot'`: đây là snapshot cũ còn giữ, không phải lịch sử đầy đủ các request trước đây.
+
+Khởi động lại các worker để nạp tên database mới. Các service Docker dùng `postgres:5432`; các terminal Miniconda trên Windows dùng `127.0.0.1:2001`.
+
+## Xem bằng DBeaver
+
+Host `127.0.0.1`, port `2001`, database kết nối `postgres`, username `root`, password `123456`. Bật **Show all databases** và Refresh.
+
+Trong `flight_raw_db` → `public` → Tables:
+
+- `raw_api_responses`: mỗi response AirLabs/OpenWeather là một snapshot, có endpoint, tham số không chứa key, thời điểm lấy và JSON gốc.
+- `raw_flights`: từng dòng lịch bay, giữ cả dòng trùng và dòng không hợp lệ; `processing_status` là `pending`, `processed`, `rejected` hoặc `duplicate`.
+- `raw_weather`: gió gốc m/s, tầm nhìn gốc mét, JSON thời tiết gốc.
+
+Trong `flight_processed_db`:
+
+- `public.ingested_flights`: các chuyến đã chuẩn hóa và cập nhật theo khóa chuyến; có `raw_response_id` và `raw_row_index` để đối chiếu nguồn.
+- `public.airport_weather`: gió km/h, tầm nhìn km; `raw_response_id` trỏ tới response gốc.
+- `flight_data.*`: dữ liệu chuyến bay theo mô hình quan hệ.
+- `analytics.*`: các kết quả thống kê/dự báo.
+- Các bảng legacy từ phiên bản cũ được giữ nguyên; luồng live mới đọc raw từ `flight_raw_db`.
+
+Ví dụ mở hai SQL Editor, mỗi editor chọn đúng database:
+
+```sql
+-- Kết nối flight_raw_db
+SELECT response_id, row_index, airline_iata, flight_number, dep_time,
+       processing_status, processing_error, processed_flight_key
+FROM public.raw_flights ORDER BY raw_id DESC LIMIT 50;
+SELECT response_id, airport_code, wind_speed_ms, visibility_m
+FROM public.raw_weather;
+```
+
+```sql
+-- Kết nối flight_processed_db
+SELECT raw_response_id, raw_row_index, flight_key, crs_dep_time,
+       crs_elapsed_time, distance, delay_status
+FROM public.ingested_flights ORDER BY ingested_at DESC LIMIT 50;
+SELECT raw_response_id, airport_code, wind_speed_kmh, visibility_km
+FROM public.airport_weather;
+```
+
+Ghép theo `response_id = raw_response_id` và `row_index = raw_row_index`. Ví dụ raw gió `10 m/s`, tầm nhìn `8000 m` trở thành `36 km/h`, `8 km`. Số dòng raw có thể lớn hơn số chuyến đã xử lý vì giữ nhiều lần lấy và các dòng bị loại/trùng.
+
+API `/api/ingestion/raw` đọc từ database raw; `/api/ingestion/flights` đọc dữ liệu đã xử lý. Trang danh sách chuyến bay giữ hai chế độ Raw/Processed và hiển thị trạng thái xử lý của dòng raw.

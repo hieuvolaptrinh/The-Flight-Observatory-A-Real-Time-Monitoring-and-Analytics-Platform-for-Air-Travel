@@ -214,6 +214,8 @@ def normalize_record(raw: dict[str, Any], fetched_at: str, ingested_at: str) -> 
         "is_delayed": is_delayed,
         "fetched_at": fetched_at,
         "ingested_at": ingested_at,
+        "raw_response_id": raw.get("_details", {}).get("raw_response_id"),
+        "raw_row_index": raw.get("_details", {}).get("raw_row_index"),
     }
 
 
@@ -222,6 +224,7 @@ class Pipeline:
         self.settings = settings or Settings()
         self.repository = repository or FlightRepository(self.settings.database_url)
         self.providers = LiveProviders(self.settings, self.repository)
+        self.raw_store = self.providers.raw_store
 
     async def _notify_downstream(self) -> None:
         raw_urls = self.settings.trigger_downstream_urls.strip()
@@ -260,6 +263,12 @@ class Pipeline:
         scheduled: list[Flight] = []
         seen_in_batch: set[str] = set()
         for raw in raw_items:
+            details = raw.get("_details", {})
+            # Direct imports/backfills also preserve the available source JSON.
+            if details.get("raw") is not None and not details.get("raw_response_id"):
+                details["raw_response_id"] = await asyncio.to_thread(self.raw_store.archive,
+                    "airlabs", "legacy/schedules", {}, {"response": [details["raw"]]}, archive_kind="import")
+                details["raw_row_index"] = 0
             rec = normalize_record(raw, fetched_at=fetched_at, ingested_at=ingested_at)
             if rec and raw.get("_live"):
                 rec["_details"] = raw["_details"]
@@ -318,6 +327,10 @@ class Pipeline:
         }
 
         counts = await asyncio.to_thread(self.repository.insert_batch, normalized, batch_meta, tuple(scheduled), replay)
+        for record in normalized:
+            if record.get("raw_response_id"):
+                await asyncio.to_thread(self.raw_store.mark, record["raw_response_id"], record["raw_row_index"],
+                    "processed", flight_key=record["flight_key"])
         logger.info(
             "Ingestion batch completed: source=%s window=[%s..%s] received=%d inserted=%d duplicates=%d total_stored=%d",
             batch_meta["source"],

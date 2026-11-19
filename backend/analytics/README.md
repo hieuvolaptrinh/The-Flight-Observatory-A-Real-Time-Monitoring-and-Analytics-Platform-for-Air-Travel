@@ -8,6 +8,12 @@ docker compose -f backend/docker-compose.yml up -d --build --wait
 
 Swagger ở `http://localhost:2002/api/analytics/docs`. Ingestion lấy dữ liệu nguồn theo lịch backend mỗi 300 giây mặc định. Dùng `GET /api/ingestion/flights` để đọc bản ghi đã lưu.
 
+Chạy riêng Analytics trên Windows từ `backend/analytics` với Uvicorn mới cần Selector event loop để Psycopg async hoạt động:
+
+```powershell
+uvicorn app.main:app --env-file .env --host 127.0.0.1 --port 2005 --loop asyncio:SelectorEventLoop
+```
+
 | Phương thức và đường dẫn dưới `/api/analytics` | Kết quả |
 | --- | --- |
 | `GET /summary` | Tổng chuyến, thời điểm cập nhật và số chuyến có quan sát trễ đến. |

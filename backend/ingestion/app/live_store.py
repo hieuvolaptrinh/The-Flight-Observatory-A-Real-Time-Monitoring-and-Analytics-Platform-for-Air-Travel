@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS airport_weather (
     airport_code TEXT NOT NULL, observed_at TEXT NOT NULL, fetched_at TEXT NOT NULL,
     temperature_c REAL, wind_speed_kmh REAL, wind_gust_kmh REAL,
     visibility_km REAL, precipitation_mm REAL, pressure_hpa REAL,
-    source TEXT NOT NULL, raw_json TEXT NOT NULL,
+    source TEXT NOT NULL, raw_json TEXT NOT NULL, raw_response_id TEXT,
     PRIMARY KEY (airport_code, observed_at)
 );
 CREATE TABLE IF NOT EXISTS live_flight_details (
@@ -57,6 +57,9 @@ class LiveStore:
                 conn.execute("ALTER TABLE ingested_flights ALTER COLUMN delay_minutes DROP NOT NULL")
                 conn.execute("ALTER TABLE ingested_flights ALTER COLUMN is_delayed DROP NOT NULL")
                 conn.execute("ALTER TABLE ingestion_batches ADD COLUMN IF NOT EXISTS updated_count INTEGER NOT NULL DEFAULT 0")
+                conn.execute("ALTER TABLE ingested_flights ADD COLUMN IF NOT EXISTS raw_response_id TEXT")
+                conn.execute("ALTER TABLE ingested_flights ADD COLUMN IF NOT EXISTS raw_row_index INTEGER")
+                conn.execute("ALTER TABLE airport_weather ADD COLUMN IF NOT EXISTS raw_response_id TEXT")
             else:
                 conn.executescript(LIVE_SCHEMA)
                 columns = conn.execute("PRAGMA table_info(ingested_flights)").fetchall()
@@ -72,6 +75,10 @@ class LiveStore:
                         conn.execute(statement)
                 if not any(row["name"] == "updated_count" for row in conn.execute("PRAGMA table_info(ingestion_batches)")):
                     conn.execute("ALTER TABLE ingestion_batches ADD COLUMN updated_count INTEGER NOT NULL DEFAULT 0")
+                for table, column, kind in (("ingested_flights", "raw_response_id", "TEXT"),
+                        ("ingested_flights", "raw_row_index", "INTEGER"), ("airport_weather", "raw_response_id", "TEXT")):
+                    if not any(row["name"] == column for row in conn.execute(f"PRAGMA table_info({table})")):
+                        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
             # Carry the last poll forward when upgrading an existing database.
             row = conn.execute("SELECT payload FROM provider_cache WHERE cache_key='ingestion_status'").fetchone()
             checked_at = json.loads(row["payload"]).get("checked_at") if row else None
@@ -123,7 +130,11 @@ class LiveStore:
     def weather(self, code, payload):
         fields = ("observed_at", "fetched_at", "temperature_c", "wind_speed_kmh", "wind_gust_kmh", "visibility_km", "precipitation_mm", "pressure_hpa", "source")
         with self.connect() as conn:
-            conn.execute(self.sql("""INSERT INTO airport_weather VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(airport_code, observed_at) DO UPDATE SET fetched_at=excluded.fetched_at
-            """), (code, *(payload.get(k) for k in fields), json.dumps(payload)))
+            conn.execute(self.sql("""INSERT INTO airport_weather
+                (airport_code,observed_at,fetched_at,temperature_c,wind_speed_kmh,wind_gust_kmh,
+                 visibility_km,precipitation_mm,pressure_hpa,source,raw_json,raw_response_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(airport_code, observed_at) DO UPDATE SET fetched_at=excluded.fetched_at,
+                    raw_json=excluded.raw_json,raw_response_id=excluded.raw_response_id
+            """), (code, *(payload.get(k) for k in fields), json.dumps(payload), payload.get("raw_response_id")))
             conn.commit()

@@ -43,7 +43,9 @@ CREATE TABLE IF NOT EXISTS ingested_flights (
     delay_status TEXT NOT NULL,
     is_delayed INTEGER,
     fetched_at TEXT NOT NULL,
-    ingested_at TEXT NOT NULL
+    ingested_at TEXT NOT NULL,
+    raw_response_id TEXT,
+    raw_row_index INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_flights_origin ON ingested_flights(origin);
@@ -72,7 +74,7 @@ INGESTED_FLIGHT_COLS = (
     "tail_num", "op_carrier_fl_num", "flight_code", "origin_airport_id", "origin",
     "dest_airport_id", "dest", "route", "crs_dep_time", "crs_arr_time", "dep_hour",
     "crs_elapsed_time", "distance", "delay_minutes", "delay_status", "is_delayed",
-    "fetched_at", "ingested_at",
+    "fetched_at", "ingested_at", "raw_response_id", "raw_row_index",
 )
 
 PG_INSERT_INGESTED_FLIGHT_SQL = """
@@ -81,18 +83,19 @@ INSERT INTO ingested_flights (
     tail_num, op_carrier_fl_num, flight_code, origin_airport_id, origin,
     dest_airport_id, dest, route, crs_dep_time, crs_arr_time, dep_hour,
     crs_elapsed_time, distance, delay_minutes, delay_status, is_delayed,
-    fetched_at, ingested_at
+    fetched_at, ingested_at, raw_response_id, raw_row_index
 ) VALUES (
     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-    %s, %s, %s
+    %s, %s, %s, %s, %s
 )
 ON CONFLICT (flight_key) DO UPDATE SET
     crs_arr_time=EXCLUDED.crs_arr_time, crs_elapsed_time=EXCLUDED.crs_elapsed_time,
     distance=EXCLUDED.distance, delay_minutes=EXCLUDED.delay_minutes,
     delay_status=EXCLUDED.delay_status, is_delayed=EXCLUDED.is_delayed,
     tail_num=COALESCE(EXCLUDED.tail_num, ingested_flights.tail_num),
-    fetched_at=EXCLUDED.fetched_at, ingested_at=EXCLUDED.ingested_at
+    fetched_at=EXCLUDED.fetched_at, ingested_at=EXCLUDED.ingested_at,
+    raw_response_id=EXCLUDED.raw_response_id, raw_row_index=EXCLUDED.raw_row_index
 """
 
 SQLITE_INSERT_INGESTED_FLIGHT_SQL = """
@@ -101,18 +104,19 @@ INSERT INTO ingested_flights (
     tail_num, op_carrier_fl_num, flight_code, origin_airport_id, origin,
     dest_airport_id, dest, route, crs_dep_time, crs_arr_time, dep_hour,
     crs_elapsed_time, distance, delay_minutes, delay_status, is_delayed,
-    fetched_at, ingested_at
+    fetched_at, ingested_at, raw_response_id, raw_row_index
 ) VALUES (
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-    ?, ?, ?
+    ?, ?, ?, ?, ?
 )
 ON CONFLICT (flight_key) DO UPDATE SET
     crs_arr_time=excluded.crs_arr_time, crs_elapsed_time=excluded.crs_elapsed_time,
     distance=excluded.distance, delay_minutes=excluded.delay_minutes,
     delay_status=excluded.delay_status, is_delayed=excluded.is_delayed,
     tail_num=COALESCE(excluded.tail_num, ingested_flights.tail_num),
-    fetched_at=excluded.fetched_at, ingested_at=excluded.ingested_at
+    fetched_at=excluded.fetched_at, ingested_at=excluded.ingested_at,
+    raw_response_id=excluded.raw_response_id, raw_row_index=excluded.raw_row_index
 """
 
 STATS_SELECT = """

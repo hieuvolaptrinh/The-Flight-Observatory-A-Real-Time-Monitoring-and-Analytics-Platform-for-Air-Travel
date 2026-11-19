@@ -39,6 +39,7 @@ class Settings(BaseModel):
         validate_default=True,
     )
     database_url: str = Field(default_factory=lambda: os.getenv("DATABASE_URL") or _DEFAULT_DB)
+    raw_database_url: str = Field(default_factory=lambda: os.getenv("RAW_DATABASE_URL", ""))
     trigger_downstream_urls: str = Field(
         default_factory=lambda: os.getenv("TRIGGER_DOWNSTREAM_URLS", "")
     )

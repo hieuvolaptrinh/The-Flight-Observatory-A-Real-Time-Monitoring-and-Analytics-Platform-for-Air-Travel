@@ -96,7 +96,7 @@ def test_compose_has_no_simulator_or_csv_and_no_duplicate_keys():
     assert "ingestion" in compose["services"]["analytics"]["depends_on"]
 
 
-@pytest.mark.skipif(not os.getenv("TEST_DATABASE_URL"), reason="Requires a dedicated PostgreSQL test database")
+@pytest.mark.skipif(not (os.getenv("TEST_DATABASE_URL") and os.getenv("TEST_RAW_DATABASE_URL")), reason="Requires two dedicated PostgreSQL test databases")
 def test_postgres_live_migration_and_upsert():
     import asyncio
     import psycopg
@@ -110,7 +110,10 @@ def test_postgres_live_migration_and_upsert():
         conn.execute((ROOT / "ingestion/db/schema.sql").read_text(encoding="utf-8"))
         conn.execute((ROOT / "db/init.sql").read_text(encoding="utf-8"))
     repo = FlightRepository(url)
-    settings = Settings(database_url=url, airlabs_api_key="", airlabs_accounts="", openweather_api_key="")
+    raw_url = os.environ["TEST_RAW_DATABASE_URL"]
+    with psycopg.connect(raw_url) as conn:
+        assert conn.info.dbname.startswith("test"), "Raw database must also be a dedicated test database"
+    settings = Settings(database_url=url, raw_database_url=raw_url, airlabs_api_key="", airlabs_accounts="", openweather_api_key="")
     pipeline = Pipeline(settings, repo)
     raw = {"airline_iata": "AA", "flight_number": "9999", "dep_iata": "JFK", "arr_iata": "LAX", "dep_time": "2026-11-17 10:00", "arr_time": "2026-11-17 13:00"}
     for estimate in (None, 25):

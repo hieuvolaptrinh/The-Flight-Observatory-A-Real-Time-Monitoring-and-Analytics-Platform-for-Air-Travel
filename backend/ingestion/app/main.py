@@ -38,7 +38,7 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
 
     app = FastAPI(
         title="Flight Ingestion Service",
-        description="Polls AirLabs schedules and OpenWeather, updates flights and caches weather in DB.",
+        description="Archives API responses in the raw database before normalizing flights and weather into the processed database.",
         version="1.1.0",
         root_path=settings.root_path,
         lifespan=lifespan,
@@ -67,6 +67,7 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
             "source": "airlabs",
             "provider_status": runner.pipeline.providers.last_status,
             "storage": runner.pipeline.repository.storage_type,
+            "raw_database": runner.pipeline.raw_store.database_name,
         }
 
     @app.get("/providers", tags=["operations"])
@@ -77,7 +78,7 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
 
     @app.get("/raw", tags=["results"])
     async def raw_flights(cursor: int = Query(0, ge=0), window_size: int = Query(12, ge=1, le=100)):
-        return await asyncio.to_thread(app.state.runner.pipeline.repository.raw_live_flights, cursor, window_size)
+        return await asyncio.to_thread(app.state.runner.pipeline.raw_store.flights, cursor, window_size)
 
     @app.get("/results", response_model=Results, tags=["results"])
     @app.get("/flights", response_model=Results, tags=["results"])
