@@ -1,23 +1,24 @@
 """
-Local API Gateway (port 8080) for local development outside Docker.
+Local API Gateway (port 2002) for local development outside Docker.
 Mirrors the exact routing rules of backend/gateway/default.conf.template (Nginx):
-  - /api/ingestion/{path}  -> http://127.0.0.1:8004/{path}
-  - /api/analytics/{path}  -> http://127.0.0.1:8001/{path}
-  - /api/clustering/{path} -> http://127.0.0.1:8002/{path}
-  - /api/prediction/{path} -> http://127.0.0.1:8003/{path}
+  - /api/ingestion/{path}  -> http://127.0.0.1:2004/{path}
+  - /api/analytics/{path}  -> http://127.0.0.1:2005/{path}
+  - /api/clustering/{path} -> http://127.0.0.1:2006/{path}
+  - /api/prediction/{path} -> http://127.0.0.1:2007/{path}
 """
 from __future__ import annotations
 
 import os
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 import httpx
 
 UPSTREAMS = {
-    "ingestion": os.getenv("INGESTION_UPSTREAM", "http://127.0.0.1:8004"),
-    "analytics": os.getenv("ANALYTICS_UPSTREAM", "http://127.0.0.1:8001"),
-    "clustering": os.getenv("CLUSTERING_UPSTREAM", "http://127.0.0.1:8002"),
-    "prediction": os.getenv("PREDICTION_UPSTREAM", "http://127.0.0.1:8003"),
+    "ingestion": os.getenv("INGESTION_UPSTREAM", "http://127.0.0.1:2004"),
+    "analytics": os.getenv("ANALYTICS_UPSTREAM", "http://127.0.0.1:2005"),
+    "clustering": os.getenv("CLUSTERING_UPSTREAM", "http://127.0.0.1:2006"),
+    "prediction": os.getenv("PREDICTION_UPSTREAM", "http://127.0.0.1:2007"),
 }
 
 app = FastAPI(title="Flight Observatory API Gateway", version="1.0.0")
@@ -83,9 +84,5 @@ async def proxy_service(service: str, path: str, request: Request):
             status_code=resp.status_code,
             media_type=resp.headers.get("content-type", "application/json"),
         )
-    except httpx.RequestError as exc:
-        return Response(
-            content=f'{{"detail":"Upstream service \'{service}\' unreachable at {upstream_base}: {exc}"}}',
-            status_code=502,
-            media_type="application/json",
-        )
+    except httpx.RequestError:
+        return JSONResponse(status_code=502, content={"detail": f"Service '{service}' is unavailable. Check that it is running."})

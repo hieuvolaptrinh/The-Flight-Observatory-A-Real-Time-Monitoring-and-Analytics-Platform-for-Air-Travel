@@ -21,6 +21,11 @@ export default function Dashboard({ view }: { view: ViewMode }) {
   const checkedAt = provider?.checked_at
     ? new Date(provider.checked_at).toLocaleString("vi-VN", { dateStyle: "short", timeStyle: "short" })
     : null;
+  const visibleErrors = Object.entries(obs.apiErrors).filter(([service, error]) => error && (
+    service === "ingestion" && !obs.isAnalytics || service === "clustering" && (obs.isFlights || obs.isClustering)
+    || service === "prediction" && obs.isForecast || service === "raw" && obs.isFlights && obs.dataLayer === "raw"
+  ));
+  const predictionReason = obs.predictionMeta?.reason;
 
 
   return (
@@ -28,13 +33,16 @@ export default function Dashboard({ view }: { view: ViewMode }) {
       <TopHeader
         pageTitle={obs.pageTitle}
         pageSubtitle={obs.pageSubtitle}
-        apiMode={obs.apiMode}
+        apiMode={obs.isAnalytics ? "gateway" : obs.apiMode}
         busy={obs.busy}
-        onTriggerClustering={obs.triggerClusteringRun}
+        onTriggerClustering={obs.isForecast ? obs.triggerPredictionRun : obs.triggerClusteringRun}
+        runLabel={obs.isForecast ? "Chạy dự báo" : "Chạy K-Means"}
+        showRun={obs.isForecast || obs.isFlights || obs.isClustering}
         onExportCsv={obs.exportCsv}
       />
 
       <main className="main-workspace">
+        {visibleErrors.map(([service, error]) => <p className="api-error" role="alert" key={service}>{error}</p>)}
         <div className="dashboard-context">
           <div className="dashboard-source-bar">
             {(obs.isOverview || obs.isFlights) && (
@@ -72,9 +80,11 @@ export default function Dashboard({ view }: { view: ViewMode }) {
             </details>
           </div>
           {obs.isForecast && !obs.filteredPredictions.length && (
-            <p className="analytics-status">Chưa có dự báo. Cần model đã huấn luyện, chuyến bay và thời tiết phù hợp.</p>
+            <p className="analytics-status">{predictionReason === "model_missing"
+              ? "Prediction API đã kết nối nhưng chưa có model đã huấn luyện để dự báo."
+              : "Chưa có dự báo cho bộ lọc này. Cần chuyến bay và thời tiết phù hợp."}</p>
           )}
-          {!obs.isAnalytics && (
+          {!obs.isAnalytics && !obs.isClustering && (
             <FilterBar
               airport={obs.airport}
               setAirport={obs.setAirport}
@@ -152,6 +162,10 @@ export default function Dashboard({ view }: { view: ViewMode }) {
         )}
 
         {obs.isClustering && (
+          <>
+          {!obs.clusteringReady && !obs.apiErrors.clustering && <p className="analytics-status">
+            Chưa có kết quả phân cụm sẵn sàng. Chạy K-Means sau khi có đủ dữ liệu sân bay hoặc tuyến bay.
+          </p>}
           <ClusteringView
             clusteringMeta={obs.clusteringMeta}
             clusterEntityType={obs.clusterEntityType}
@@ -161,6 +175,7 @@ export default function Dashboard({ view }: { view: ViewMode }) {
             setSelectedClusterId={obs.setSelectedClusterId}
             centroids={obs.centroids}
           />
+          </>
         )}
 
         {obs.isForecast && (
@@ -170,7 +185,6 @@ export default function Dashboard({ view }: { view: ViewMode }) {
             forecastAvg={obs.forecastAvg}
             highCount={obs.highCount}
             meanProbability={obs.meanProbability}
-            selection={obs.selection}
             risk={obs.risk}
             setRisk={obs.setRisk}
           />
@@ -178,7 +192,10 @@ export default function Dashboard({ view }: { view: ViewMode }) {
 
         {obs.isAnalytics && <AnalyticsView />}
 
-        {obs.isOverview && (
+        {obs.isOverview && !obs.serverMeta && <p className="analytics-empty" role="status">
+          {obs.apiErrors.ingestion ? "Chưa đọc được số liệu tổng quan." : "Đang tải số liệu tổng quan…"}
+        </p>}
+        {obs.isOverview && obs.serverMeta && (
           <OverviewView
             total={obs.total}
             rate={obs.rate}

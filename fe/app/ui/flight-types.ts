@@ -2,7 +2,7 @@ import type { AirportCoord } from "./us-airports";
 
 // Type definitions for flight items (ingested_flights), server-side SQL metadata, and clustering/prediction schemas
 
-export const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:2002/api";
+export const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "/api";
 
 export type ViewMode = "overview" | "flights" | "clustering" | "forecast" | "analytics";
 

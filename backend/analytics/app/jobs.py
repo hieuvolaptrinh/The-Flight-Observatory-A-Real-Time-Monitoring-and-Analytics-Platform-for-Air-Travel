@@ -23,7 +23,7 @@ class JobRunner:
         self.results = Results(service=service)
         self._lock = asyncio.Lock()
 
-    async def run_once(self, trigger: str = "manual") -> Job:
+    async def run_once(self, trigger: str = "manual", date_from=None, date_to=None) -> Job:
         if self._lock.locked():
             raise JobAlreadyRunning("A job is already running.")
         async with self._lock:
@@ -34,7 +34,7 @@ class JobRunner:
             self.latest = job
             logger.info("Job started: service=%s id=%s trigger=%s", self.service, job.id, trigger)
             try:
-                output = await self.pipeline.run()
+                output = await self.pipeline.run(date_from, date_to)
                 finished_at = datetime.now(timezone.utc)
                 # Publish only a complete result; preserve the last good result on failure.
                 self.results = Results(

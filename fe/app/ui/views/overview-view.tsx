@@ -41,6 +41,8 @@ export function OverviewView({
     .sort((a, b) => (b.rate ?? -1) - (a.rate ?? -1) || b.flights - a.flights);
   return (
     <>
+      <p className="analytics-status">Tự cập nhật số liệu mỗi 8 giây. Độ trễ ưu tiên giờ đến thực tế, rồi giờ đi thực tế,
+        sau đó là ước tính của nguồn. Chuyến chưa biết độ trễ được tách riêng.</p>
       <section className="metrics" aria-label="Chỉ số tổng quan">
         <Metric
           title="Chuyến bay khớp bộ lọc"

@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  API_BASE,
   AirportStat,
   CarrierStat,
   ClusterAssignment,
@@ -19,10 +18,8 @@ import {
   statusLabels,
 } from "../flight-types";
 import { US_AIRPORT_COORDS } from "../us-airports";
+import { apiRequest } from "../api-client";
 
-const DIRECT_INGESTION_URLS = ["http://127.0.0.1:2004", "http://localhost:2004"];
-const DIRECT_CLUSTERING_URLS = ["http://127.0.0.1:2006", "http://localhost:2006"];
-const DIRECT_PREDICTION_URLS = ["http://127.0.0.1:2007", "http://localhost:2007"];
 
 export function useFlightObservatory(view: ViewMode) {
   const isOverview = view === "overview";
@@ -41,11 +38,15 @@ export function useFlightObservatory(view: ViewMode) {
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [sort, setSort] = useState("time");
-  const [currentPage, setCurrentPage] = useState(1);
+  const [pageState, setPageState] = useState({ key: "", page: 1 });
   const [pageSize, setPageSize] = useState(12);
   const [updated, setUpdated] = useState<string | null>(null);
   const [toast, setToast] = useState("");
   const [busy, setBusy] = useState(false);
+  const [apiErrors, setApiErrors] = useState<Record<string, string>>({});
+  const setApiError = useCallback((service: string, error: string) => {
+    setApiErrors(previous => ({ ...previous, [service]: error }));
+  }, []);
 
   // Live flight data state from PostgreSQL (Ingestion Service)
   const [liveFlights, setLiveFlights] = useState<FlightItem[] | null>(null);
@@ -56,7 +57,6 @@ export function useFlightObservatory(view: ViewMode) {
   const [apiReady, setApiReady] = useState<boolean | null>(null);
   const [apiMode, setApiMode] = useState<"gateway" | "ingestion" | "demo">("demo");
   const flightRequest = useRef(0);
-  const activeBackendRef = useRef<{ mode: "ingestion" | "gateway"; baseUrl: string } | null>(null);
   const [batchMeta, setBatchMeta] = useState<{
     total_stored?: number;
     window_start?: number;
@@ -75,7 +75,13 @@ export function useFlightObservatory(view: ViewMode) {
 
   // Machine Learning delay prediction state (Prediction Service - STT 12 & 13)
   const [mlPredictions, setMlPredictions] = useState<PredictionItem[] | null>(null);
-  const [predictionMeta, setPredictionMeta] = useState<Record<string, any> | null>(null);
+  const [predictionMeta, setPredictionMeta] = useState<Record<string, unknown> | null>(null);
+  const filterKey = JSON.stringify([airport, destAirport, carrier, flightStatus, debouncedSearch, sort, pageSize, flightSource, selectedClusterId]);
+  const currentPage = pageState.key === filterKey ? pageState.page : 1;
+  const setCurrentPage = useCallback((value: number | ((page: number) => number)) => {
+    setPageState(previous => ({ key: filterKey,
+      page: typeof value === "function" ? value(previous.key === filterKey ? previous.page : 1) : value }));
+  }, [filterKey]);
 
   // Raw Data Lakehouse state (Bronze Layer - saved AirLabs responses via Ingestion API)
   const [dataLayer, setDataLayer] = useState<"cleaned" | "raw">("cleaned");
@@ -84,44 +90,29 @@ export function useFlightObservatory(view: ViewMode) {
   const [rawCursor, setRawCursor] = useState(0);
   const [rawTotal, setRawTotal] = useState(0);
   const rawPageSize = 12;
+  const rawRequest = useRef(0);
 
   const fetchRawFlights = useCallback(async (cursor: number) => {
+    const requestId = ++rawRequest.current;
     setRawLoading(true);
     try {
-      const candidates = [
-        `${API_BASE}/ingestion/raw?cursor=${cursor}&window_size=${rawPageSize}`,
-        `http://127.0.0.1:2004/raw?cursor=${cursor}&window_size=${rawPageSize}`,
-        `http://localhost:2004/raw?cursor=${cursor}&window_size=${rawPageSize}`,
-      ];
-      let res: Response | null = null;
-      for (const url of candidates) {
-        try {
-          const r = await fetch(url);
-          if (r.ok) {
-            res = r;
-            break;
-          }
-        } catch {
-          // Fall through to next candidate URL
-        }
-      }
-      if (res && res.ok) {
-        const payload: RawFlightsResponse = await res.json();
-        setRawFlights(payload.data || []);
-        setRawTotal(payload.total ?? 0);
-      }
+      const payload = await apiRequest<RawFlightsResponse>(`/ingestion/raw?cursor=${cursor}&window_size=${rawPageSize}`);
+      if (requestId !== rawRequest.current) return;
+      setRawFlights(payload.data || []);
+      setRawTotal(payload.total ?? 0);
+      setApiError("raw", "");
     } catch (err) {
-      console.warn("Could not fetch raw flights:", err);
+      if (requestId === rawRequest.current) setApiError("raw", err instanceof Error ? err.message : "Không tải được dữ liệu thô.");
     } finally {
-      setRawLoading(false);
+      if (requestId === rawRequest.current) setRawLoading(false);
     }
-  }, [rawPageSize]);
+  }, [rawPageSize, setApiError]);
 
   useEffect(() => {
-    if (dataLayer === "raw") {
-      fetchRawFlights(rawCursor);
-    }
-  }, [dataLayer, rawCursor, fetchRawFlights]);
+    if (!isFlights || dataLayer !== "raw") return;
+    const timer = setTimeout(() => void fetchRawFlights(rawCursor), 0);
+    return () => clearTimeout(timer);
+  }, [isFlights, dataLayer, rawCursor, fetchRawFlights]);
 
   const notify = useCallback((message: string) => {
     setToast(message);
@@ -135,87 +126,53 @@ export function useFlightObservatory(view: ViewMode) {
     return () => clearTimeout(timer);
   }, [search]);
 
-  useEffect(() => {
-    setCurrentPage(1);
-  }, [airport, destAirport, carrier, flightStatus, debouncedSearch, sort, pageSize, flightSource, selectedClusterId]);
-
-  // Fetch K-Means clustering results from Gateway or Clustering service
-  const fetchClusteringResults = useCallback(
-    async (entityType: "airport" | "route" = clusterEntityType) => {
-      const urls = [
-        `${API_BASE}/clustering/results?entity_type=${entityType}`,
-        ...DIRECT_CLUSTERING_URLS.map(u => `${u}/results?entity_type=${entityType}`),
-      ];
-      for (const url of urls) {
-        try {
-          const res = await fetch(url, { cache: "no-store" });
-          if (!res.ok) continue;
-          const json = await res.json();
-          setClusteringReady(Boolean(json.ready));
-          const items: ClusterAssignment[] = json?.output?.items || [];
-          const meta: ClusteringMeta | null = json?.output?.metadata || null;
-          setClusterAssignments(items);
-          setClusteringMeta(meta);
-          return;
-        } catch {
-          // try next
-        }
-      }
-    },
-    [clusterEntityType]
-  );
+  const clusterRequest = useRef(0);
+  const fetchClusteringResults = useCallback(async (entityType: "airport" | "route" = clusterEntityType) => {
+    const requestId = ++clusterRequest.current;
+    try {
+      const json = await apiRequest<{ ready: boolean; output: { items: ClusterAssignment[]; metadata: ClusteringMeta } }>(
+        `/clustering/results?entity_type=${entityType}`);
+      if (requestId !== clusterRequest.current) return false;
+      setClusteringReady(json.ready);
+      setClusterAssignments(json.output?.items ?? []);
+      setClusteringMeta(json.output?.metadata ?? null);
+      setApiError("clustering", "");
+      setApiMode("gateway");
+      return json.ready;
+    } catch (error) {
+      if (requestId === clusterRequest.current) setApiError("clustering", error instanceof Error ? error.message : "Không tải được phân cụm.");
+      return false;
+    }
+  }, [clusterEntityType, setApiError]);
 
   const clusterRun = clusteringMeta?.run?.run_id;
   useEffect(() => {
     if (!isFlights || !clusterRun) return;
     const controller = new AbortController();
-    const urls = [`${API_BASE}/clustering/results`, ...DIRECT_CLUSTERING_URLS.map(url => `${url}/results`)];
-    async function loadRoutes() {
-      for (const url of urls) {
-        try {
-          const response = await fetch(`${url}?entity_type=route`, { cache: "no-store", signal: controller.signal });
-          if (!response.ok) continue;
-          const result = await response.json();
-          if (!controller.signal.aborted) setRadarRoutes(result.output?.items ?? []);
-          return;
-        } catch {
-          if (controller.signal.aborted) return;
-        }
-      }
-      if (!controller.signal.aborted) setRadarRoutes([]);
-    }
-    void loadRoutes();
+    apiRequest<{ output: { items: ClusterAssignment[] } }>("/clustering/results?entity_type=route", { signal: controller.signal })
+      .then(json => { if (!controller.signal.aborted) setRadarRoutes(json.output?.items ?? []); })
+      .catch(error => { if (!controller.signal.aborted) setApiError("clustering", error.message); });
     return () => controller.abort();
-  }, [isFlights, clusterRun]);
+  }, [isFlights, clusterRun, setApiError]);
 
-  // Fetch ML delay predictions from Gateway (8080) or Prediction Service (8003)
   const fetchPredictions = useCallback(async () => {
-    const urls = [
-      `${API_BASE}/prediction/predictions`,
-      `${API_BASE}/prediction/results`,
-      ...DIRECT_PREDICTION_URLS.map(u => `${u}/predictions`),
-    ];
-    for (const url of urls) {
-      try {
-        const res = await fetch(url, { cache: "no-store" });
-        if (!res.ok) continue;
-        const json = await res.json();
-        const items: PredictionItem[] = json?.output?.items || [];
-        if (items.length > 0) {
-          setMlPredictions(items);
-          setPredictionMeta(json?.output?.metadata || null);
-          return;
-        }
-      } catch {
-        // try next candidate
-      }
+    try {
+      const json = await apiRequest<{ ready: boolean; output: { items: PredictionItem[]; metadata: Record<string, unknown> } }>("/prediction/results");
+      setMlPredictions(json.output?.items ?? []);
+      setPredictionMeta(json.output?.metadata ?? null);
+      setApiError("prediction", "");
+      setApiMode("gateway");
+      return json.ready;
+    } catch (error) {
+      setApiError("prediction", error instanceof Error ? error.message : "Không tải được dự báo.");
+      return false;
     }
-  }, []);
+  }, [setApiError]);
 
   const fetchIngestionFlights = useCallback(
-    async (silent = false, forceRediscover = false) => {
+    async (silent = false) => {
       const requestId = ++flightRequest.current;
-      setBusy(true);
+      if (!silent) setBusy(true);
 
       const params = new URLSearchParams({
         limit: String(pageSize),
@@ -233,154 +190,85 @@ export function useFlightObservatory(view: ViewMode) {
 
       const qs = params.toString();
 
-      const ingestionCandidates =
-        !forceRediscover &&
-        activeBackendRef.current &&
-        (activeBackendRef.current.mode === "ingestion" ||
-          activeBackendRef.current.mode === "gateway")
-          ? [
-              {
-                mode: activeBackendRef.current.mode,
-                baseUrl: activeBackendRef.current.baseUrl,
-                url: `${activeBackendRef.current.baseUrl}/flights?${qs}`,
-              },
-            ]
-          : [
-              {
-                mode: "gateway" as const,
-                baseUrl: `${API_BASE}/ingestion`,
-                url: `${API_BASE}/ingestion/flights?${qs}`,
-              },
-              ...DIRECT_INGESTION_URLS.map(u => ({
-                mode: "ingestion" as const,
-                baseUrl: u,
-                url: `${u}/flights?${qs}`,
-              })),
-            ];
-
-      for (const candidate of ingestionCandidates) {
-        try {
-          const res = await fetch(candidate.url, { cache: "no-store" });
-          if (!res.ok) continue;
-          const json = await res.json();
-          if (requestId !== flightRequest.current) return;
-          activeBackendRef.current = { mode: candidate.mode, baseUrl: candidate.baseUrl };
-          setApiMode(candidate.mode);
-          setApiReady(Boolean(json.ready));
-          const items: FlightItem[] = json?.output?.items || [];
-          const meta: ServerFlightMeta = json?.output?.metadata || {};
-          setLiveFlights(items);
-          setServerMeta(meta);
-
-          if (isFlights && pageSize >= 300 && currentPage === 1) {
-            setRadarFlights(items);
-          } else if (isFlights) {
-            setRadarFlights(null);
-            const mapParams = new URLSearchParams(params);
-            mapParams.set("limit", "300");
-            mapParams.set("offset", "0");
-            fetch(`${candidate.baseUrl}/flights?${mapParams.toString()}`, { cache: "no-store" })
-              .then(r => (r.ok ? r.json() : null))
-              .then(mapJson => {
-                if (requestId === flightRequest.current && mapJson?.output?.items) {
-                  setRadarFlights(mapJson.output.items);
-                }
-              })
-              .catch(() => {});
-          }
-          setBatchMeta({
-            total_stored: meta.total_stored ?? items.length,
-            window_start: meta.last_batch?.window_start,
-            window_end: meta.last_batch?.window_end,
-            inserted_count: meta.last_batch?.inserted_count,
-            duplicate_count: meta.last_batch?.duplicate_count,
-          });
-          setUpdated(json.updated_at ?? null);
-          setBusy(false);
-          if (!silent) {
-            notify(
-              json.ready
-                ? `Đã đồng bộ PostgreSQL: ${items.length}/${meta.filtered_count ?? items.length} chuyến bay (Trang ${currentPage}).`
-                : "Chưa có dữ liệu chuyến bay. Hãy đợi lượt nạp tự động."
-            );
-          }
-          return;
-        } catch {
-          if (activeBackendRef.current?.baseUrl === candidate.baseUrl) {
-            activeBackendRef.current = null;
-          }
+      try {
+        const json = await apiRequest<{ ready: boolean; updated_at: string; output: { items: FlightItem[]; metadata: ServerFlightMeta } }>(`/ingestion/flights?${qs}`);
+        if (requestId !== flightRequest.current) return;
+        const items = json.output?.items ?? [];
+        const meta = json.output?.metadata;
+        setApiError("ingestion", "");
+        setApiMode("gateway");
+        setApiReady(json.ready);
+        setLiveFlights(items);
+        setServerMeta(meta);
+        if (isFlights && pageSize >= 300 && currentPage === 1) {
+          setRadarFlights(items);
+        } else if (isFlights) {
+          const mapParams = new URLSearchParams(params);
+          mapParams.set("limit", "300");
+          mapParams.set("offset", "0");
+          apiRequest<{ output: { items: FlightItem[] } }>(`/ingestion/flights?${mapParams}`)
+            .then(result => { if (requestId === flightRequest.current) setRadarFlights(result.output.items); })
+            .catch(error => { if (requestId === flightRequest.current) setApiError("ingestion", error.message); });
         }
+        setBatchMeta({ total_stored: meta.total_stored, window_start: meta.last_batch?.window_start,
+          window_end: meta.last_batch?.window_end, inserted_count: meta.last_batch?.inserted_count,
+          duplicate_count: meta.last_batch?.duplicate_count });
+        setUpdated(json.updated_at ?? null);
+        if (!silent) notify(json.ready ? "Đã tải dữ liệu mới nhất từ database." : "Chưa có dữ liệu. Hãy đợi lượt nạp tự động.");
+      } catch (error) {
+        if (requestId === flightRequest.current) setApiError("ingestion",
+          (error instanceof Error ? error.message : "Không tải được chuyến bay.") + " Dữ liệu đang hiển thị có thể đã cũ.");
+      } finally {
+        if (requestId === flightRequest.current) setBusy(false);
       }
-
-      if (requestId !== flightRequest.current) return;
-      setServerMeta(null);
-      setApiMode("demo");
-      setApiReady(null);
-      setBusy(false);
     },
-    [airport, destAirport, carrier, flightStatus, debouncedSearch, sort, currentPage, pageSize, notify, isOverview, isFlights, flightSource, selectedClusterId]
+    [airport, destAirport, carrier, flightStatus, debouncedSearch, sort, currentPage, pageSize, notify, isOverview, isFlights, flightSource, selectedClusterId, setApiError]
   );
 
   const triggerClusteringRun = useCallback(async () => {
     setBusy(true);
-    const runUrls = [
-      `${API_BASE}/clustering/run`,
-      ...DIRECT_CLUSTERING_URLS.map(u => `${u}/run`),
-    ];
-    for (const url of runUrls) {
-      try {
-        const res = await fetch(url, { method: "POST" });
-        if (res.ok) {
-          await fetchClusteringResults();
-          setBusy(false);
-          notify("Đã chạy phân cụm K-Means + PCA(2D) trên dữ liệu DB mới nhất!");
-          return;
-        }
-      } catch {
-        // try next
-      }
-    }
-    setBusy(false);
-    notify("Không thể kết nối Clustering Service (port 2006 / Gateway 2002).");
+    try {
+      await apiRequest("/clustering/run", { method: "POST" });
+      const ready = await fetchClusteringResults();
+      notify(ready ? "Đã cập nhật kết quả phân cụm." : "Chưa có kết quả phân cụm sẵn sàng. Kiểm tra dữ liệu đầu vào.");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Không chạy được phân cụm.");
+    } finally { setBusy(false); }
   }, [fetchClusteringResults, notify]);
 
-  // Trigger manual ML prediction pipeline run (POST /run)
   const triggerPredictionRun = useCallback(async () => {
     setBusy(true);
-    const runUrls = [
-      `${API_BASE}/prediction/run`,
-      ...DIRECT_PREDICTION_URLS.map(u => `${u}/run`),
-    ];
-    for (const url of runUrls) {
-      try {
-        const res = await fetch(url, { method: "POST" });
-        if (res.ok) {
-          await fetchPredictions();
-          setBusy(false);
-          notify("Đã hoàn tất tính toán dự báo delay bằng Machine Learning!");
-          return;
-        }
-      } catch {
-        // try next
-      }
-    }
-    setBusy(false);
-    notify("Không thể kết nối Prediction Service (port 8003 / Gateway 8080).");
+    try {
+      await apiRequest("/prediction/run", { method: "POST" });
+      const ready = await fetchPredictions();
+      notify(ready ? "Đã cập nhật dự báo." : "Chưa có dự báo sẵn sàng. Xem trạng thái model và dữ liệu đầu vào.");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Không chạy được dự báo.");
+    } finally { setBusy(false); }
   }, [fetchPredictions, notify]);
 
   useEffect(() => {
-    fetchIngestionFlights(true);
-    fetchClusteringResults();
-    fetchPredictions();
-  }, [fetchIngestionFlights, fetchClusteringResults, fetchPredictions]);
+    const timer = setTimeout(() => {
+      if (isOverview || isFlights || isForecast) void fetchIngestionFlights(true);
+      if (isFlights || isClustering) void fetchClusteringResults();
+      if (isForecast) void fetchPredictions();
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [isOverview, isFlights, isClustering, isForecast, fetchIngestionFlights, fetchClusteringResults, fetchPredictions]);
 
   useEffect(() => {
-    if (!isFlights || !autoPollEnabled) return;
+    if (!(isFlights || isOverview) || !autoPollEnabled) return;
     const interval = setInterval(() => {
       fetchIngestionFlights(true);
     }, 8000);
     return () => clearInterval(interval);
-  }, [isFlights, autoPollEnabled, fetchIngestionFlights]);
+  }, [isFlights, isOverview, autoPollEnabled, fetchIngestionFlights]);
+
+  useEffect(() => {
+    if (!isFlights || dataLayer !== "raw" || !autoPollEnabled) return;
+    const timer = setInterval(() => void fetchRawFlights(rawCursor), 15000);
+    return () => clearInterval(timer);
+  }, [isFlights, dataLayer, autoPollEnabled, rawCursor, fetchRawFlights]);
 
   // Periodic auto-polling for ML Delay Predictions (/forecast) every 15 seconds
   useEffect(() => {
@@ -456,7 +344,7 @@ export function useFlightObservatory(view: ViewMode) {
   const safePage = Math.min(currentPage, totalPages);
   const startIndex = (safePage - 1) * pageSize;
 
-  const paginatedFlights = isServerSide ? liveFlights ?? [] : [];
+  const paginatedFlights = useMemo(() => isServerSide ? liveFlights ?? [] : [], [isServerSide, liveFlights]);
   const mapFlights = isServerSide ? radarFlights ?? paginatedFlights : [];
 
   const pageNumbers = useMemo(() => {
@@ -499,9 +387,11 @@ export function useFlightObservatory(view: ViewMode) {
   });
 
   const refresh = useCallback(() => {
-    fetchIngestionFlights(false, true);
-    fetchClusteringResults();
-  }, [fetchClusteringResults, fetchIngestionFlights]);
+    fetchIngestionFlights(false);
+    if (isFlights || isClustering) fetchClusteringResults();
+    if (isForecast) fetchPredictions();
+    if (isFlights && dataLayer === "raw") fetchRawFlights(rawCursor);
+  }, [isFlights, isClustering, isForecast, dataLayer, rawCursor, fetchRawFlights, fetchPredictions, fetchClusteringResults, fetchIngestionFlights]);
 
   const resetFilters = useCallback(() => {
     setAirport("all");
@@ -625,6 +515,7 @@ export function useFlightObservatory(view: ViewMode) {
     serverMeta,
     apiReady,
     apiMode,
+    apiErrors,
     batchMeta,
 
     // Clustering state

@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "test:api": "node --test scripts/test-api-client.cjs",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",

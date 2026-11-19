@@ -1,4 +1,13 @@
-# FlightLens — mẫu frontend
+# FlightLens — frontend kết nối backend
+
+Frontend hiện dùng API thật. Trình duyệt gọi `/api/...` cùng origin; Next.js chuyển tiếp tới gateway bằng `API_GATEWAY_URL` (local mặc định `http://127.0.0.1:2002`, Docker dùng `http://gateway:8080`). Đặt `NEXT_PUBLIC_API_BASE_URL=/api` trong `.env.local` và khởi động lại frontend khi đổi cấu hình.
+
+- `/analytics`: đọc kết quả đã lưu; **Chạy phân tích** tạo kết quả cho khoảng ngày được chọn.
+- `/`: Tổng quan tự cập nhật 8 giây/lần, hiển thị lỗi API và giữ số liệu cũ khi mất kết nối.
+- `/flights`: chuyển Raw/Đã xử lý, nhấn **So sánh** trên dòng raw, xem JSON đầy đủ và bảng thời tiết trước/sau đổi đơn vị.
+- `/forecast`: đọc Prediction API; trạng thái thiếu model được hiển thị riêng, không dùng độ trễ quan sát làm dự báo thay thế.
+
+Kiểm tra frontend: `npm run test:api`, `npx tsc --noEmit`, `npm run build`.
 
 Hai màn hình cho phần việc của Hiếu:
 
@@ -14,9 +23,9 @@ npm run dev
 
 Mở http://localhost:3000 và http://localhost:3000/forecast.
 
-## Phạm vi demo
+## Ghi chú của phiên bản mẫu cũ
 
-Dữ liệu tổng hợp nằm ở `app/ui/demo-data.ts`, chưa gọi API hoặc chạy mô hình.
+Các ghi chú dưới đây mô tả phiên bản mẫu cũ, không phải luồng API hiện tại.
 Ngày tham chiếu cố định: 06/11/2026. Ngày dự báo: 07/11/2026.
 Giờ cập nhật dùng UTC; giờ khởi hành trong bảng dự báo dùng giờ địa phương sân bay xuất phát.
 Nút Làm mới tải lại dữ liệu mẫu và hiển thị thời điểm xem lại; không gọi inference hoặc training.

@@ -9,6 +9,8 @@ interface TopHeaderProps {
   busy: boolean;
   onTriggerClustering: () => void;
   onExportCsv: () => void;
+  runLabel?: string;
+  showRun?: boolean;
 }
 
 export function TopHeader({
@@ -18,6 +20,8 @@ export function TopHeader({
   busy,
   onTriggerClustering,
   onExportCsv,
+  runLabel = "Chạy K-Means",
+  showRun = true,
 }: TopHeaderProps) {
   return (
     <header className="top-command-bar">
@@ -42,19 +46,19 @@ export function TopHeader({
       <div className="top-telemetry-actions">
         <span className={`status-badge-pill ${apiMode !== "demo" ? "lavender" : "peach"}`}>
           <span className="badge-dot" />
-          {apiMode !== "demo" ? `Gateway · ${apiMode.toUpperCase()}` : "Đang kết nối"}
+          {apiMode !== "demo" ? "API qua gateway" : "Đang kết nối"}
         </span>
 
         <div className="top-action-buttons">
-          <button
+          {showRun && <button
             type="button"
             className="button secondary"
             onClick={onTriggerClustering}
             disabled={busy}
           >
             <Icon name="cluster" size={15} />
-            Chạy K-Means
-          </button>
+            {runLabel}
+          </button>}
           <button type="button" className="button secondary" onClick={onExportCsv}>
             <Icon name="download" size={15} />
             Xuất CSV

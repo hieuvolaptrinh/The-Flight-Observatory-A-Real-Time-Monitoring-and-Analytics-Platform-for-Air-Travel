@@ -1,8 +1,9 @@
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
 from statistics import mean
 
 import psycopg
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 
 from app.config import Settings
 from app.schemas import PipelineOutput
@@ -15,9 +16,38 @@ class Pipeline:
     async def connect(self):
         return await psycopg.AsyncConnection.connect(self.settings.database_url, row_factory=dict_row)
 
-    async def run(self) -> PipelineOutput:
-        snapshot = await self.snapshot(force=True)
-        return PipelineOutput(metadata={"snapshot": summary(snapshot)})
+    async def run(self, date_from=None, date_to=None) -> PipelineOutput:
+        async with await self.connect() as db:
+            # Every chart in a published snapshot sees the same source version.
+            await db.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+            default_bounds = await self.bounds(db, None, None)
+            bounds = (date_from, date_to) if date_from is not None else default_bounds
+            if bounds is None:
+                return PipelineOutput(metadata={"snapshot": summary(None)})
+            await db.execute("SELECT analytics.refresh_schedule(%s, %s)", bounds)
+            snapshot = await (await db.execute("""
+                SELECT * FROM analytics.schedule_snapshots
+                WHERE date_from=%s AND date_to=%s FOR UPDATE
+            """, bounds)).fetchone()
+            payload = snapshot["payload"]
+            payload.update(version=2, scope="default" if bounds == default_bounds else "window")
+            payload["scatter"] = await self._scatter(db, *bounds)
+            payload["correlation"] = await self._correlations(db, *bounds)
+            for field, source_field in (("trend", "trend"), ("seasonality", "seasonal")):
+                components = {}
+                for grain in ("week", "month"):
+                    rows, period = decompose(payload["series"], grain)
+                    items = [{"period_start": row["period_start"], "flight_count": row["flight_count"],
+                              source_field: row[source_field]} for row in rows if row[source_field] is not None]
+                    components[grain] = {"items": items, "ready": bool(items),
+                        "seasonal_period": period if source_field == "seasonal" else None}
+                months = sum(row["grain"] == "month" and row["flight_count"] > 0 for row in payload["series"])
+                components["auto_grain"] = "month" if months >= (24 if field == "seasonality" else 6) else "week"
+                payload[field] = components
+            # The SQL aggregate and these derived patterns commit together.
+            await db.execute("""UPDATE analytics.schedule_snapshots SET payload=%s
+                WHERE date_from=%s AND date_to=%s""", (Jsonb(payload), *bounds))
+            return PipelineOutput(metadata={"snapshot": summary(snapshot)})
 
     async def bounds(self, db, date_from, date_to):
         if date_from is not None:
@@ -29,49 +59,31 @@ class Pipeline:
         end = dates["last"] + timedelta(days=1)
         return max(dates["first"], end - timedelta(days=1096)), end
 
-    async def snapshot(self, date_from=None, date_to=None, *, force=False):
+    async def snapshot(self, date_from=None, date_to=None):
         async with await self.connect() as db:
-            bounds = await self.bounds(db, date_from, date_to)
-            if bounds is None:
-                return None
-            lookup = """
-                SELECT date_from, date_to, computed_at, flight_count, payload
-                FROM analytics.schedule_snapshots WHERE date_from = %s AND date_to = %s
-            """
-            snapshot = await (await db.execute(lookup, bounds)).fetchone()
-            # The default dashboard reads the scheduled result. Explicit date
-            # windows retain their on-demand refresh behavior.
-            if force or (date_from is not None and (
-                snapshot is None or (datetime.now(timezone.utc) - snapshot["computed_at"]).total_seconds()
-                >= self.settings.job_interval_seconds
-            )):
-                await db.execute("SELECT analytics.refresh_schedule(%s, %s)", bounds)
-                snapshot = await (await db.execute(lookup, bounds)).fetchone()
-            return snapshot
+            if date_from is not None:
+                query = """SELECT * FROM analytics.schedule_snapshots
+                    WHERE date_from=%s AND date_to=%s AND payload->>'version'='2'"""
+                return await (await db.execute(query, (date_from, date_to))).fetchone()
+            return await (await db.execute("""SELECT * FROM analytics.schedule_snapshots
+                WHERE payload->>'version'='2' AND payload->>'scope'='default'
+                ORDER BY computed_at DESC LIMIT 1""")).fetchone()
 
-    async def scatter(self, date_from, date_to, grain, limit, offset, period_start=None):
-        async with await self.connect() as db:
-            bounds = await self.bounds(db, date_from, date_to)
-            if bounds is None:
-                return []
-            cursor = await db.execute("""
-                SELECT date_trunc(%s, flight_date::timestamp)::date AS period_start,
-                       flight_date AS date, scheduled_dep_local::text AS departure_local,
-                       scheduled_elapsed_min, distance_miles, flight_id
-                FROM flight_data.flights WHERE flight_date >= %s AND flight_date < %s
-                    AND scheduled_elapsed_min IS NOT NULL
-                    AND (%s::date IS NULL OR date_trunc(%s, flight_date::timestamp)::date = %s)
-                ORDER BY flight_date, scheduled_dep_local, flight_id LIMIT %s OFFSET %s
-            """, (grain, *bounds, period_start, grain, period_start, limit, offset))
-            return await cursor.fetchall()
+    async def _scatter(self, db, date_from, date_to):
+        cursor = await db.execute("""
+            SELECT flight_date::text AS date, scheduled_dep_local::text AS departure_local,
+                   scheduled_elapsed_min::double precision, distance_miles::double precision, flight_id,
+                   date_trunc('week',flight_date::timestamp)::date::text AS week,
+                   date_trunc('month',flight_date::timestamp)::date::text AS month
+            FROM flight_data.flights WHERE flight_date >= %s AND flight_date < %s
+                AND scheduled_elapsed_min IS NOT NULL
+            ORDER BY flight_date,scheduled_dep_local,flight_id
+        """, (date_from, date_to))
+        return [dict(row) for row in await cursor.fetchall()]
 
-    async def correlations(self, date_from, date_to):
+    async def _correlations(self, db, date_from, date_to):
         variables = ["distance_miles", "scheduled_elapsed_min", "departure_hour"]
-        async with await self.connect() as db:
-            bounds = await self.bounds(db, date_from, date_to)
-            if bounds is None:
-                return {"variables": variables, "matrix": [[None] * 3 for _ in variables], "samples": [[0] * 3 for _ in variables]}
-            cursor = await db.execute("""
+        cursor = await db.execute("""
                 WITH input AS (
                     SELECT distance_miles::double precision AS x, scheduled_elapsed_min::double precision AS y,
                            (EXTRACT(EPOCH FROM scheduled_dep_local)::integer %% 86400) / 3600.0 AS z
@@ -82,8 +94,8 @@ class Pipeline:
                        count(x) AS nx, count(y) AS ny, count(z) AS nz,
                        regr_count(x,y) AS nxy, regr_count(x,z) AS nxz, regr_count(y,z) AS nyz
                 FROM input
-            """, bounds)
-            row = await cursor.fetchone()
+            """, (date_from, date_to))
+        row = await cursor.fetchone()
         return {
             "variables": variables,
             "matrix": [[row["xx"], row["xy"], row["xz"]], [row["xy"], row["yy"], row["yz"]], [row["xz"], row["yz"], row["zz"]]],

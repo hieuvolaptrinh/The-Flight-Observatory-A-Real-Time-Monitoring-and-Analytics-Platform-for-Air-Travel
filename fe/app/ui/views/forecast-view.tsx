@@ -1,8 +1,7 @@
 "use client";
 
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo } from "react";
 import {
-  AirportStat,
   PredictionItem,
   number,
   riskLabels,
@@ -18,7 +17,6 @@ interface ForecastViewProps {
   forecastAvg: number;
   highCount: number;
   meanProbability: number;
-  selection: AirportStat[];
   risk: string;
   setRisk: (val: string) => void;
 }
@@ -29,17 +27,17 @@ export function ForecastView({
   forecastAvg,
   highCount,
   meanProbability,
-  selection,
   risk,
   setRisk,
 }: ForecastViewProps) {
-  const [currentPage, setCurrentPage] = useState(1);
+  const [pageState, setPageState] = useState({ key: "", page: 1 });
+  const pageKey = risk + "/" + filteredPredictions.length;
+  const currentPage = pageState.key === pageKey ? pageState.page : 1;
+  function setCurrentPage(value: number | ((page: number) => number)) {
+    setPageState(previous => ({ key: pageKey,
+      page: typeof value === "function" ? value(previous.key === pageKey ? previous.page : 1) : value }));
+  }
   const pageSize = 12;
-
-  // Reset to first page when risk category or dataset size changes
-  useEffect(() => {
-    setCurrentPage(1);
-  }, [risk, filteredPredictions.length]);
 
   const totalFilteredCount = filteredPredictions.length;
   const totalPages = Math.max(1, Math.ceil(totalFilteredCount / pageSize));
@@ -113,13 +111,14 @@ export function ForecastView({
             <span className="chart-unit">ĐƠN VỊ: PHÚT</span>
           </div>
           <div className="airport-bars">
-            {selection.slice(0, 8).map(a => {
-              const rows = scoped.filter(p => p.origin === a.code);
+            {!scoped.length && <p className="analytics-empty">Chưa có kết quả dự báo để vẽ biểu đồ.</p>}
+            {[...new Set(scoped.map(prediction => prediction.origin))].slice(0, 8).map(code => {
+              const rows = scoped.filter(p => p.origin === code);
               const value = rows.length
                 ? rows.reduce((s, p) => s + p.delay, 0) / rows.length
-                : a.delay;
+                : 0;
               return (
-                <div className="airport-bar" key={a.code}>
+                <div className="airport-bar" key={code}>
                   <span className="airport-bar-value">{value.toFixed(1)}</span>
                   <div className="airport-bar-track">
                     <div
@@ -127,7 +126,7 @@ export function ForecastView({
                       className={value >= 25 ? "bar-coral" : "bar-teal"}
                     />
                   </div>
-                  <strong>{a.code}</strong>
+                  <strong>{code}</strong>
                 </div>
               );
             })}

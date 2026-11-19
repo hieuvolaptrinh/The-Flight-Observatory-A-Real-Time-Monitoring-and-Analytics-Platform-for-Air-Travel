@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from app.config import Settings
 from app.forecast import forecast
 from app.jobs import JobAlreadyRunning, JobRunner
-from app.pipeline import Pipeline, decompose, summary
+from app.pipeline import Pipeline, summary
 from app.schemas import Job, PipelineOutput, Results
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -119,25 +119,21 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
 
     @app.get("/scatter", tags=["charts"])
     async def scatter(query: Annotated[Chart, Query()]):
-        bounds = query.bounds()
-        snapshot = await active.snapshot(*bounds)
+        snapshot = await active.snapshot(*query.bounds())
         metadata = summary(snapshot)
-        rows = await active.scatter(snapshot["date_from"], snapshot["date_to"], query.grain,
-                                    query.limit + 1, query.offset, query.period_start) if metadata["ready"] else []
-        return query.response(rows, grain=query.grain, summary=metadata)
+        period = query.period_start.isoformat() if query.period_start else None
+        key = "date" if query.grain == "day" else query.grain
+        rows = [{**row, "period_start": row[key]} for row in snapshot["payload"]["scatter"]
+                if period is None or row[key] == period] if snapshot else []
+        return query.response(query.slice(rows), grain=query.grain, summary=metadata)
 
     async def component(query, field):
         snapshot = await active.snapshot(*query.bounds())
-        series = snapshot["payload"]["series"] if snapshot else []
-        grain = query.grain
-        if grain == "auto":
-            months = sum(row["grain"] == "month" and row["flight_count"] > 0 for row in series)
-            grain = "month" if months >= (24 if field == "seasonal" else 6) else "week"
-        rows, period = decompose(series, grain)
-        usable = [{"period_start": row["period_start"], "flight_count": row["flight_count"], field: row[field]}
-                  for row in rows if row[field] is not None]
-        return query.response(query.slice(usable), grain=grain, ready=bool(usable),
-                              seasonal_period=period if field == "seasonal" else None)
+        saved = snapshot["payload"][field] if snapshot else {}
+        grain = saved.get("auto_grain", "week") if query.grain == "auto" else query.grain
+        component = saved.get(grain, {"items": [], "ready": False, "seasonal_period": None})
+        return query.response(query.slice(component["items"]), grain=grain, ready=component["ready"],
+                              seasonal_period=component["seasonal_period"], summary=summary(snapshot))
 
     @app.get("/trend", tags=["charts"])
     async def trend(query: Annotated[Component, Query()]):
@@ -145,14 +141,14 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
 
     @app.get("/seasonality", tags=["charts"])
     async def seasonality(query: Annotated[Component, Query()]):
-        return await component(query, "seasonal")
+        return await component(query, "seasonality")
 
     @app.get("/correlation", tags=["charts"])
     async def correlation(window: Annotated[DateWindow, Query()]):
         snapshot = await active.snapshot(*window.bounds())
         if not summary(snapshot)["ready"]:
             return {"ready": False, "variables": [], "matrix": [], "samples": []}
-        return {"ready": True, **await active.correlations(snapshot["date_from"], snapshot["date_to"])}
+        return {"ready": True, **snapshot["payload"]["correlation"], "summary": summary(snapshot)}
 
     @app.get("/forecast", tags=["forecast"])
     async def saved_forecast():
@@ -175,9 +171,10 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
         return app.state.runner.latest
 
     @app.post("/run", response_model=Job, tags=["operations"])
-    async def run():
+    async def run(window: DateWindow | None = None):
+        bounds = window.bounds() if window else (None, None)
         try:
-            return await app.state.runner.run_once()
+            return await app.state.runner.run_once(date_from=bounds[0], date_to=bounds[1])
         except JobAlreadyRunning as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except NotImplementedError as exc:

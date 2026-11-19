@@ -77,3 +77,5 @@ FROM public.airport_weather;
 Ghép theo `response_id = raw_response_id` và `row_index = raw_row_index`. Ví dụ raw gió `10 m/s`, tầm nhìn `8000 m` trở thành `36 km/h`, `8 km`. Số dòng raw có thể lớn hơn số chuyến đã xử lý vì giữ nhiều lần lấy và các dòng bị loại/trùng.
 
 API `/api/ingestion/raw` đọc từ database raw; `/api/ingestion/flights` đọc dữ liệu đã xử lý. Trang danh sách chuyến bay giữ hai chế độ Raw/Processed và hiển thị trạng thái xử lý của dòng raw.
+
+Trong trang Chuyến bay, chọn **Raw** rồi nhấn **So sánh** để xem các trường trước/sau và hai JSON đầy đủ. Nếu chuyến bay đã có lần cập nhật mới, UI ghi rõ bên phải là bản đã xử lý mới nhất. API đối chiếu: `GET /api/ingestion/raw/{raw_id}/comparison`. Bảng thời tiết ở cuối trang dùng `GET /api/ingestion/weather` để so sánh đơn vị raw và đã xử lý.

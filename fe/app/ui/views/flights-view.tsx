@@ -1,5 +1,7 @@
 "use client";
 
+import { useState } from "react";
+
 import FlightRadarMap from "../flight-radar-map";
 import {
   CLUSTER_COLORS,
@@ -17,6 +19,7 @@ import { CustomSelect } from "../components/custom-select";
 import { Icon } from "../components/icons";
 import { Metric } from "../components/metric-card";
 import { PcaScatterChart } from "../components/pca-scatter-chart";
+import { FlightDataComparison, WeatherDataComparison } from "../components/data-comparison";
 
 interface FlightsViewProps {
   apiMode: "gateway" | "ingestion" | "demo";
@@ -136,6 +139,7 @@ export function FlightsView({
   rawPageSize,
   notify,
 }: FlightsViewProps) {
+  const [comparisonId, setComparisonId] = useState<number | null>(null);
   return (
     <>
       {apiMode !== "demo" && apiReady === false && (
@@ -343,14 +347,14 @@ export function FlightsView({
         <div className="panel-heading">
           <div>
             <h2>
-              {dataLayer === "raw" ? "Dữ liệu Thô từ Database (Bronze Layer) " : "Danh sách chi tiết chuyến bay "}
+              {dataLayer === "raw" ? "Dữ liệu thô từ API " : "Dữ liệu chuyến bay đã xử lý "}
               <span className="count-pill">
                 {dataLayer === "raw" ? `${rawTotal.toLocaleString()} dòng` : totalFilteredCount}
               </span>
             </h2>
             <p>
               {dataLayer === "raw"
-                ? "Snapshot chuyến bay nhận từ AirLabs, lưu tại backend"
+                ? "Lịch sử các lần lấy AirLabs; bộ lọc chuyến bay phía trên chỉ áp dụng cho chế độ đã xử lý"
                 : "Dữ liệu AirLabs đã chuẩn hóa và cập nhật; delay chưa biết được hiển thị riêng"}
             </p>
           </div>
@@ -409,6 +413,7 @@ export function FlightsView({
           </div>
         )}
 
+        {comparisonId !== null && <FlightDataComparison rawId={comparisonId} onClose={() => setComparisonId(null)} />}
         <div className="table-scroll">
           {dataLayer === "raw" ? (
             <table>
@@ -436,7 +441,9 @@ export function FlightsView({
                   rawFlights.map((r, i) => (
                     <tr key={r.RAW_ID || `raw-${i}`}>
                       <td>
-                        <strong>#{r.RAW_ID}</strong> <small className="muted">(Dòng {r.ROW_NUMBER})</small>
+                        <button type="button" className="button secondary" onClick={() => setComparisonId(r.RAW_ID)}>
+                          #{r.RAW_ID} · So sánh
+                        </button><small className="muted"> (Dòng {r.ROW_NUMBER})</small>
                       </td>
                       <td className="tabular">{r.FL_DATE}</td>
                       <td>
@@ -508,6 +515,10 @@ export function FlightsView({
                           {f.op_unique_carrier}
                         </span>
                         <strong>{f.flight_code}</strong>
+                        <details onClick={event => event.stopPropagation()}>
+                          <summary>Xem dữ liệu đã xử lý</summary>
+                          <pre className="processed-flight-json">{JSON.stringify(f, null, 2)}</pre>
+                        </details>
                       </td>
                       <td className="tabular">{f.tail_num || "—"}</td>
                       <td className="tabular">{f.fl_date}</td>
@@ -682,6 +693,7 @@ export function FlightsView({
           </div>
         )}
       </section>
+      <WeatherDataComparison />
     </>
   );
 }

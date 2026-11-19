@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { API_BASE, number } from "../flight-types";
+import { number } from "../flight-types";
+import { apiRequest } from "../api-client";
 
 type Forecast =
   | { ready: false; forecast_date?: string }
@@ -17,13 +18,7 @@ type Forecast =
   };
 
 async function requestForecast(method: "GET" | "POST", signal: AbortSignal): Promise<Forecast> {
-  const response = await fetch(API_BASE + "/analytics/forecast", { method, cache: "no-store", signal });
-  if (!response.ok) {
-    const body = await response.json().catch(() => null);
-    const detail = typeof body?.detail === "string" ? body.detail : "HTTP " + response.status;
-    throw new Error(detail);
-  }
-  return response.json();
+  return apiRequest<Forecast>("/analytics/forecast", { method, signal });
 }
 
 export function ScheduleForecast() {

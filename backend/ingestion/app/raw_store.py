@@ -126,3 +126,22 @@ class RawStore:
             })
         return {"source": "airlabs", "database": self.database_name, "total": total, "data": data,
                 "window_start": offset, "window_end": offset + len(data), "window_size": limit}
+
+    def flight(self, raw_id):
+        with self.connect() as conn:
+            row = conn.execute(self.sql("""SELECT f.*,r.fetched_at,r.archive_kind FROM raw_flights f
+                JOIN raw_api_responses r USING(response_id) WHERE f.raw_id=?"""), (raw_id,)).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        result["raw"] = json.loads(result.pop("raw_json"))
+        return result
+
+    def weather(self, response_id):
+        with self.connect() as conn:
+            row = conn.execute(self.sql("SELECT * FROM raw_weather WHERE response_id=?"), (response_id,)).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        result["raw"] = json.loads(result.pop("raw_json"))
+        return result

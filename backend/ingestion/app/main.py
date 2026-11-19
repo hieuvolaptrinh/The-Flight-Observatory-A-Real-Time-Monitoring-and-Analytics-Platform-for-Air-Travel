@@ -3,13 +3,14 @@ from contextlib import asynccontextmanager, suppress
 import logging
 from typing import Literal
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import Settings
 from app.jobs import JobRunner
 from app.pipeline import Pipeline
 from app.schemas import Job, Results
+from app.live_store import LiveStore
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
@@ -79,6 +80,49 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
     @app.get("/raw", tags=["results"])
     async def raw_flights(cursor: int = Query(0, ge=0), window_size: int = Query(12, ge=1, le=100)):
         return await asyncio.to_thread(app.state.runner.pipeline.raw_store.flights, cursor, window_size)
+
+    @app.get("/raw/{raw_id}/comparison", tags=["results"])
+    async def compare_flight(raw_id: int):
+        active = app.state.runner.pipeline
+        def read():
+            raw = active.raw_store.flight(raw_id)
+            if raw is None:
+                raise HTTPException(404, "Raw flight not found")
+            store = LiveStore(active.repository)
+            with store.connect() as conn:
+                found = conn.execute(store.sql("SELECT * FROM ingested_flights WHERE flight_key=?"),
+                    (raw["processed_flight_key"],)).fetchone()
+            processed = dict(found) if found else None
+            original = raw["raw"] if isinstance(raw["raw"], dict) else {}
+            fields = (("Hãng bay", "airline_iata", "op_unique_carrier"),
+                ("Số hiệu", "flight_number", "op_carrier_fl_num"),
+                ("Giờ khởi hành", "dep_time", "crs_dep_time"),
+                ("Giờ đến", "arr_time", "crs_arr_time"),
+                ("Khoảng cách (dặm)", "distance", "distance"),
+                ("Thời lượng (phút)", "duration", "crs_elapsed_time"))
+            return {"raw": raw, "processed": processed,
+                "matches_current_source": bool(processed and processed.get("raw_response_id") == raw["response_id"]
+                    and processed.get("raw_row_index") == raw["row_index"]),
+                "fields": [{"label": label, "raw": original.get(source),
+                    "processed": processed.get(target) if processed else None} for label, source, target in fields]}
+        return await asyncio.to_thread(read)
+
+    @app.get("/weather", tags=["results"])
+    async def weather(limit: int = Query(12, ge=1, le=100)):
+        active = app.state.runner.pipeline
+        def read():
+            store = LiveStore(active.repository)
+            with store.connect() as conn:
+                rows = conn.execute(store.sql("""SELECT * FROM airport_weather
+                    ORDER BY observed_at DESC,airport_code LIMIT ?"""), (limit,)).fetchall()
+            items = []
+            for row in rows:
+                processed = dict(row)
+                processed.pop("raw_json", None)
+                raw = active.raw_store.weather(processed.get("raw_response_id"))
+                items.append({"raw": raw, "processed": processed})
+            return {"items": items}
+        return await asyncio.to_thread(read)
 
     @app.get("/results", response_model=Results, tags=["results"])
     @app.get("/flights", response_model=Results, tags=["results"])

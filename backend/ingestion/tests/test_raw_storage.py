@@ -117,6 +117,33 @@ def test_error_response_is_archived_with_credentials_redacted(tmp_path):
         assert "flight-secret" not in row["payload_json"] + row["request_params"]
 
 
+def test_raw_processed_comparison_and_weather_endpoints(tmp_path):
+    from fastapi.testclient import TestClient
+    from app.main import create_app
+    schedules = [dict(SCHEDULE), {**SCHEDULE, "dep_time": "bad"}]
+    pipeline = make_pipeline(tmp_path, schedules)
+    asyncio.run(pipeline.run())
+    rows = pipeline.raw_store.flights(0, 100)["data"]
+    valid = next(row for row in rows if row["processing_status"] == "processed")
+    rejected = next(row for row in rows if row["processing_status"] == "rejected")
+    configured = pipeline.settings.model_copy(update={"scheduler_enabled": False})
+    with TestClient(create_app(configured, pipeline)) as client:
+        result = client.get(f"/raw/{valid['RAW_ID']}/comparison").json()
+        assert result["raw"]["raw"] == SCHEDULE
+        assert result["processed"]["crs_dep_time"] == "10:00"
+        assert result["matches_current_source"] is True
+        assert client.get(f"/raw/{rejected['RAW_ID']}/comparison").json()["processed"] is None
+        assert client.get("/raw/999999/comparison").status_code == 404
+        weather = client.get("/weather").json()["items"][0]
+        assert weather["raw"]["wind_speed_ms"] == 10
+        assert weather["processed"]["wind_speed_kmh"] == 36
+        schedules[0]["dep_delayed"] = 20
+        asyncio.run(pipeline.run())
+        latest = client.get(f"/raw/{valid['RAW_ID']}/comparison").json()
+        assert latest["matches_current_source"] is False
+        assert latest["processed"]["delay_minutes"] == 20
+
+
 @pytest.mark.skipif(not (os.getenv("TEST_DATABASE_URL") and os.getenv("TEST_RAW_DATABASE_URL")), reason="Requires two dedicated PostgreSQL test databases")
 def test_postgres_archives_and_processes_api_responses(tmp_path):
     import psycopg

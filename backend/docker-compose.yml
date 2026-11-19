@@ -43,7 +43,8 @@ services:
     build:
       context: ../fe
       args:
-        NEXT_PUBLIC_API_BASE_URL: "http://localhost:${GATEWAY_PORT:-2002}/api"
+        NEXT_PUBLIC_API_BASE_URL: /api
+        API_GATEWAY_URL: http://gateway:8080
     restart: unless-stopped
     ports:
       - "127.0.0.1:${FRONTEND_PORT:-3000}:3000"

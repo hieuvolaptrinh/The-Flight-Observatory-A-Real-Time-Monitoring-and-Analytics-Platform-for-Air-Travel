@@ -2,7 +2,8 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 import { CustomSelect } from "../components/custom-select";
-import { API_BASE, flightDateRange, number } from "../flight-types";
+import { flightDateRange, number } from "../flight-types";
+import { apiRequest } from "../api-client";
 
 type Grain = "day" | "week" | "month";
 type SeriesRow = { period_start: string; flight_count: number };
@@ -49,9 +50,7 @@ function timePoint(date: string, value: number) {
 }
 
 async function read<T>(path: string, signal: AbortSignal): Promise<T> {
-  const response = await fetch(API_BASE + "/analytics/" + path, { cache: "no-store", signal });
-  if (!response.ok) throw new Error("Analytics HTTP " + response.status);
-  return response.json();
+  return apiRequest<T>("/analytics/" + path, { signal });
 }
 
 type DateWindow = { from: string; to: string };
@@ -166,7 +165,9 @@ export function AnalyticsView() {
   const [dateError, setDateError] = useState("");
   const [loadingCoverage, setLoadingCoverage] = useState(false);
   const [refresh, setRefresh] = useState(0);
-  const [result, setResult] = useState<{ key: string; data?: AnalyticsData; error?: boolean }>();
+  const [running, setRunning] = useState(false);
+  const [runError, setRunError] = useState("");
+  const [result, setResult] = useState<{ key: string; data?: AnalyticsData; error?: string }>();
   const key = [grain, selected, window?.from, window?.to, refresh].join("/");
   const data = result?.key === key ? result.data : undefined;
   const failed = result?.key === key && result.error;
@@ -178,8 +179,8 @@ export function AnalyticsView() {
       try {
         const next = await load(grain, selected, window, controller.signal);
         if (!controller.signal.aborted) setResult({ key, data: next });
-      } catch {
-        if (!controller.signal.aborted) setResult({ key, error: true });
+      } catch (error) {
+        if (!controller.signal.aborted) setResult({ key, error: error instanceof Error ? error.message : "Lỗi Analytics API" });
       } finally {
         if (!controller.signal.aborted) timer = setTimeout(update, 15000);
       }
@@ -229,6 +230,20 @@ export function AnalyticsView() {
       setDateError("Không đọc được khoảng dữ liệu từ Analytics API.");
     } finally {
       setLoadingCoverage(false);
+    }
+  }
+
+  async function runAnalysis() {
+    setRunning(true);
+    setRunError("");
+    try {
+      await apiRequest("/analytics/run", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(window ? { date_from: window.from, date_to: shiftDate(window.to, 1) } : {}) });
+      setRefresh(value => value + 1);
+    } catch (error) {
+      setRunError(error instanceof Error ? error.message : "Chưa chạy được phân tích.");
+    } finally {
+      setRunning(false);
     }
   }
 
@@ -295,12 +310,16 @@ export function AnalyticsView() {
           />
         </div>
         <button type="button" onClick={() => setRefresh(value => value + 1)}>Tải lại</button>
+        <button type="button" disabled={running} onClick={() => void runAnalysis()}>
+          {running ? "Đang phân tích…" : "Chạy phân tích"}
+        </button>
       </div>
 
-      {failed && <p className="analytics-empty" role="alert">Không tải được kết quả từ Analytics API.</p>}
+      {failed && <p className="analytics-empty" role="alert">Không tải được kết quả phân tích. {failed}</p>}
+      {runError && <p className="analytics-empty" role="alert">{runError}</p>}
       {!data && !failed && <p className="analytics-empty" role="status">Đang tải kết quả phân tích…</p>}
       {data && !data.line.summary.ready && (
-        <p className="analytics-empty" role="status">Chưa có kết quả phân tích. Chạy Analytics POST /run để tạo kết quả.</p>
+        <p className="analytics-empty" role="status">Chưa có kết quả đã lưu cho khoảng ngày này. Nhấn “Chạy phân tích” để tạo kết quả.</p>
       )}
 
       {data?.line.summary.ready && (
