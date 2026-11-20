@@ -147,6 +147,29 @@ def test_route_cluster_filter_runs_before_pagination_and_overview_uses_full_scop
     assert repo.query_flights(source="legacy")["metadata"]["total_stored"] == 0
 
 
+def test_overview_hourly_window_counts_flights_without_delay(repo):
+    pipeline = Pipeline(settings(repo), repo)
+    records = [
+        normalize({**SCHEDULE, "dep_time": "2026-11-10 08:00", "dep_delayed": 40}),
+        normalize({**SCHEDULE, "dep_time": "2026-11-11 10:00", "dep_delayed": 25}),
+        normalize({**SCHEDULE, "dep_time": "2026-11-16 09:00"}),
+        normalize({**SCHEDULE, "dep_delayed": 0}),
+    ]
+    asyncio.run(pipeline.ingest_payload({"source": "airlabs", "data": records}))
+
+    latest = repo.query_flights(source="airlabs", include_overview=True)["metadata"]
+    assert latest["hourly"] == [{"hour": 10, "flights": 1, "known": 1, "delayed": 0}]
+
+    recent = repo.query_flights(source="airlabs", include_overview=True, hourly_days=7, limit=1)["metadata"]
+    assert recent["hourly_date_from"] == "2026-11-11"
+    assert recent["last_flight_date"] == "2026-11-17"
+    assert recent["filtered_count"] == 4
+    assert recent["hourly"] == [
+        {"hour": 9, "flights": 1, "known": 0, "delayed": 0},
+        {"hour": 10, "flights": 2, "known": 2, "delayed": 1},
+    ]
+
+
 def test_billing_cycle():
     assert quota_period(datetime(2026, 11, 17, tzinfo=timezone.utc), 18) == "2026-10-18"
     assert quota_period(datetime(2026, 11, 18, tzinfo=timezone.utc), 18) == "2026-11-18"

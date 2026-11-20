@@ -73,6 +73,7 @@ services:
       ROOT_PATH: /api/analytics
       SCHEDULER_ENABLED: "${ANALYTICS_SCHEDULER_ENABLED:-true}"
       JOB_INTERVAL_SECONDS: "${ANALYTICS_INTERVAL_SECONDS:-300}"
+      FORECAST_AIRPORTS: "${FORECAST_AIRPORTS:-${AIRLABS_AIRPORTS:-JFK}}"
 
   clustering:
     <<: *worker

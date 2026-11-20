@@ -20,11 +20,11 @@ uvicorn app.main:app --env-file .env --host 127.0.0.1 --port 2005 --loop asyncio
 | `GET /line` | Số chuyến và số liệu theo kỳ. |
 | `GET /scatter` | Từng chuyến với ngày, giờ địa phương và thời lượng dự kiến. |
 | `GET /histogram` | Các khoảng thời lượng rộng 30 phút theo kỳ. |
-| `GET /trend` | Đường xu hướng hồi quy tuyến tính trên chuỗi đã gom theo tháng hoặc tuần. |
-| `GET /seasonality` | Thành phần mùa vụ sau khi bỏ xu hướng. Chu kỳ 12 tháng hoặc 4 tuần, cần ít nhất hai lần quan sát mỗi pha. |
+| `GET /trend` | Đường xu hướng hồi quy tuyến tính theo tháng, tuần, hoặc theo ngày khi chưa có hai tuần quan sát. |
+| `GET /seasonality` | Thành phần mùa vụ sau khi bỏ xu hướng. Chu kỳ 12 tháng hoặc 4 tuần, cần ít nhất hai lần quan sát mỗi pha. Khi chưa đủ mẫu, trả thêm `hourly_profile` với phân bố khởi hành theo giờ. |
 | `GET /correlation` | Ma trận Pearson và số mẫu cho từng cặp biến. |
 | `POST /run` | Cập nhật snapshot ngay. |
-| `POST /forecast` | Tạo và lưu dự báo Gemini cho ngày kế tiếp trong lịch giả lập. |
+| `POST /forecast` | Tạo và lưu dự báo Gemini cho ngày mai theo múi giờ cấu hình. |
 | `GET /forecast` | Đọc số chuyến dự báo, giải thích và trạng thái sẵn sàng. |
 | `GET /classification` | Đọc nhãn lưu lượng `high` hoặc `low` của cùng dự báo. |
 
@@ -35,9 +35,13 @@ GET /api/analytics/line?grain=week&limit=5&offset=0
 GET /api/analytics/histogram?grain=day&date_from=2025-01-06&date_to=2025-01-07
 ```
 
-Đặt `GEMINI_API_KEY` trong `backend/analytics/.env`. `GEMINI_MODEL` có thể thay trong cùng file. `POST /forecast` gửi tối đa 28 ngày số chuyến đã tổng hợp, cần ít nhất 5 ngày có dữ liệu, và dùng lại kết quả đã lưu cho cùng ngày dự báo. Nhãn `high` nghĩa là số dự báo bằng hoặc vượt trung vị mẫu lịch sử. Dự báo là **ước lượng lưu lượng trong mẫu lịch giả lập**. Ngày dự báo là `FL_DATE` lớn nhất đã nạp cộng một ngày. Với CSV lịch bay hiện tại, tỷ lệ trễ thực tế trả `null`.
+Đặt `GEMINI_API_KEY` trong `backend/analytics/.env`. Có thể đặt `GEMINI_MODEL` và `FORECAST_TIMEZONE` tại cùng file. Múi giờ mặc định là `America/New_York`. Với Docker, đặt `FORECAST_AIRPORTS` trong `backend/.env` nếu muốn dùng phạm vi khác `AIRLABS_AIRPORTS`. Các sân bay trong một dự báo nên cùng múi giờ.
 
-Có thể [nạp CSV trước](../ingestion/db/README.md) để demo trend, seasonal hoặc forecast mà không phải đợi luồng 5 chuyến tích lũy đủ lịch sử.
+Analytics cần ít nhất 5 ngày có chuyến từ nguồn live trong 28 ngày trước hôm nay. Gemini nhận số chuyến khởi hành đã tổng hợp theo ngày và ước tính trong cùng phạm vi thu thập. Nhãn `high` nghĩa là số dự báo bằng hoặc vượt trung vị mẫu lịch sử. Khi scheduler bật và có khóa, service kiểm tra lúc khởi động và mỗi giờ. Lượt tạo thủ công và scheduler dùng lại kết quả lưu trong PostgreSQL cho cùng ngày và phạm vi. Các request GET chỉ đọc dữ liệu.
+
+Khi demo với lịch sử ngắn, đặt `FORECAST_MIN_OBSERVED_DAYS=1` trong `backend/analytics/.env`. Dự báo dùng dưới 5 ngày được hiển thị là **Dự báo sơ bộ**. Đặt lại 5 để dùng ngưỡng mặc định.
+
+Có thể [nạp CSV trước](../ingestion/db/README.md) để demo trend và seasonality. Dự báo ngày mai dùng lịch sử live.
 
 ## Kiểm tra trên dashboard
 

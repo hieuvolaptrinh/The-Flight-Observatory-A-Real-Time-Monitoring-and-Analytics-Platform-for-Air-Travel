@@ -13,11 +13,13 @@ from datetime import datetime, timezone
 import hashlib
 import logging
 from pathlib import Path
-import sqlite3
+from tempfile import NamedTemporaryFile
 from typing import Any
 
 import joblib
 import numpy as np
+import psycopg
+from psycopg.rows import dict_row
 from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
 from sklearn.metrics import (
     accuracy_score,
@@ -50,6 +52,8 @@ FEATURE_NAMES = [
     "precipitation_mm",
     "pressure_hpa",
 ]
+SCHEDULE_FEATURE_NAMES = FEATURE_NAMES[:6]
+MIN_TRAINING_ROWS = 100
 
 
 def _opt_float(val: Any, default: float = 0.0) -> float:
@@ -191,7 +195,7 @@ def _compute_ground_truth_delay(row: dict[str, Any], idx: int) -> tuple[float, i
 
 def load_training_dataset(settings: Settings) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Read training samples from CSV / Database.
+    Read training samples for the standalone offline mode.
     Returns:
       X: feature matrix
       y_reg: continuous delay minutes (target for regression)
@@ -227,18 +231,53 @@ def load_training_dataset(settings: Settings) -> tuple[np.ndarray, np.ndarray, n
     return X, y_reg, y_cls
 
 
+def _load_schedule_training_rows(settings: Settings) -> list[dict[str, Any]]:
+    with psycopg.connect(settings.source_database_url, row_factory=dict_row) as conn:
+        rows = conn.execute("""
+            SELECT f.origin, f.dest, f.crs_dep_time, f.day_of_week, f.distance, f.crs_elapsed_time,
+                   (d.payload::jsonb->>'scheduled_dep_utc')::timestamptz AS scheduled_at,
+                   (d.payload::jsonb->>'dep_delay_min')::double precision AS observed_delay
+            FROM ingested_flights AS f JOIN live_flight_details AS d USING (flight_key)
+            WHERE d.payload::jsonb->>'source' = 'airlabs'
+              AND d.payload::jsonb->>'dep_delay_min' IS NOT NULL
+              AND d.payload::jsonb->>'scheduled_dep_utc' IS NOT NULL
+              AND d.payload::jsonb->>'flight_status' IN ('active', 'landed')
+              AND f.distance IS NOT NULL AND f.crs_elapsed_time IS NOT NULL
+            ORDER BY scheduled_at DESC, f.flight_key DESC
+            LIMIT %s
+        """, (settings.max_sample_rows,)).fetchall()
+    return rows[::-1]
+
+
 def train_and_save_model(settings: Settings | None = None) -> dict[str, Any]:
     """Train Regression & Classification models and persist the artifact."""
     settings = settings or Settings()
-    X, y_reg, y_cls = load_training_dataset(settings)
-
-    if len(X) < 100:
-        raise ValueError(f"Insufficient training samples ({len(X)} rows). Need at least 100 rows.")
-
-    # Split train/test 80:20
-    X_train, X_test, y_reg_train, y_reg_test, y_cls_train, y_cls_test = train_test_split(
-        X, y_reg, y_cls, test_size=0.2, random_state=42, stratify=y_cls if np.sum(y_cls) > 10 else None
-    )
+    feature_names = FEATURE_NAMES
+    if settings.live_api_mode:
+        feature_names = SCHEDULE_FEATURE_NAMES
+        rows = _load_schedule_training_rows(settings)
+        if len(rows) < MIN_TRAINING_ROWS:
+            raise ValueError(
+                f"Need {MIN_TRAINING_ROWS} observed AirLabs departure delays. Found {len(rows)}."
+            )
+        X = np.array([_extract_features_row(row)[:len(feature_names)] for row in rows], dtype=np.float64)
+        y_reg = np.maximum(0, np.array([row["observed_delay"] for row in rows], dtype=np.float64))
+        y_cls = (y_reg >= 15).astype(np.int32)
+        # Keep the newest observations for evaluation, without splitting equal departure times.
+        cutoff = rows[len(rows) * 4 // 5]["scheduled_at"]
+        split = next(index for index, row in enumerate(rows) if row["scheduled_at"] == cutoff)
+        X_train, X_test = X[:split], X[split:]
+        y_reg_train, y_reg_test = y_reg[:split], y_reg[split:]
+        y_cls_train, y_cls_test = y_cls[:split], y_cls[split:]
+        if len(np.unique(y_cls_train)) != 2 or len(y_cls_test) < 2:
+            raise ValueError("Chronological split needs both training classes and at least two evaluation rows.")
+    else:
+        X, y_reg, y_cls = load_training_dataset(settings)
+        if len(X) < MIN_TRAINING_ROWS:
+            raise ValueError(f"Insufficient training samples ({len(X)} rows). Need at least {MIN_TRAINING_ROWS} rows.")
+        X_train, X_test, y_reg_train, y_reg_test, y_cls_train, y_cls_test = train_test_split(
+            X, y_reg, y_cls, test_size=0.2, random_state=42, stratify=y_cls if np.sum(y_cls) > 10 else None
+        )
 
     # 1. Feature standard scaling
     scaler = StandardScaler()
@@ -262,16 +301,16 @@ def train_and_save_model(settings: Settings | None = None) -> dict[str, Any]:
     y_cls_prob = classifier.predict_proba(X_test_scaled)[:, 1]
     acc = float(accuracy_score(y_cls_test, y_cls_pred))
     f1 = float(f1_score(y_cls_test, y_cls_pred, zero_division=0))
-    try:
-        roc_auc = float(roc_auc_score(y_cls_test, y_cls_prob))
-    except Exception:
-        roc_auc = 0.5
+    roc_auc = float(roc_auc_score(y_cls_test, y_cls_prob)) if len(np.unique(y_cls_test)) == 2 else None
 
     bundle = {
-        "model_version": "prediction-v1.0",
+        "model_version": "prediction-schedule-v1.0" if settings.live_api_mode else "prediction-v1.0",
+        "input_profile": "schedule_only" if settings.live_api_mode else "schedule_and_weather",
         "trained_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "training_samples": len(X),
-        "feature_names": FEATURE_NAMES,
+        "feature_names": feature_names,
+        "training_rows": len(X_train),
+        "evaluation_rows": len(X_test),
         "scaler": scaler,
         "regressor": regressor,
         "classifier": classifier,
@@ -284,7 +323,7 @@ def train_and_save_model(settings: Settings | None = None) -> dict[str, Any]:
             "classification": {
                 "accuracy": round(acc, 4),
                 "f1_score": round(f1, 4),
-                "roc_auc": round(roc_auc, 4),
+                "roc_auc": round(roc_auc, 4) if roc_auc is not None else None,
             },
         },
     }
@@ -292,15 +331,23 @@ def train_and_save_model(settings: Settings | None = None) -> dict[str, Any]:
     try:
         model_path = Path(settings.model_path)
         model_path.parent.mkdir(parents=True, exist_ok=True)
-        joblib.dump(bundle, model_path)
+        with NamedTemporaryFile(dir=model_path.parent, prefix=".prediction-", suffix=".joblib", delete=False) as tmp:
+            temporary_path = Path(tmp.name)
+        try:
+            joblib.dump(bundle, temporary_path)
+            temporary_path.replace(model_path)
+        finally:
+            temporary_path.unlink(missing_ok=True)
         logger.info(
-            "Saved prediction bundle to %s [Reg MAE: %.2f min | Cls Acc: %.2f%% | ROC-AUC: %.4f]",
+            "Saved prediction bundle to %s [MAE %.2f min, accuracy %.2f%%, ROC-AUC %s]",
             model_path,
             mae,
             acc * 100.0,
             roc_auc,
         )
     except Exception as exc:
+        if settings.live_api_mode:
+            raise
         logger.warning("Could not persist model bundle to disk (%s). Running with in-memory model.", exc)
     return bundle
 

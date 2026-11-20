@@ -23,6 +23,7 @@ from app.config import Settings
 from app.schemas import PipelineOutput
 from app.train import (
     FEATURE_NAMES,
+    SCHEDULE_FEATURE_NAMES,
     _extract_features_row,
     train_and_save_model,
 )
@@ -215,6 +216,27 @@ class Pipeline:
                 })
         return [_enrich_flight_weather(r) for r in rows]
 
+    def _load_scheduled_departures_sync(self) -> list[dict[str, Any]]:
+        import psycopg
+        from psycopg.rows import dict_row
+
+        with psycopg.connect(self.settings.source_database_url, row_factory=dict_row) as conn:
+            return conn.execute("""
+                SELECT f.flight_key, f.flight_code, f.op_unique_carrier, f.origin, f.dest, f.fl_date,
+                       f.crs_dep_time, f.day_of_week, f.distance, f.crs_elapsed_time
+                FROM ingested_flights AS f JOIN live_flight_details AS d USING (flight_key)
+                CROSS JOIN LATERAL (
+                    SELECT (d.payload::jsonb->>'scheduled_dep_utc')::timestamptz AS scheduled_at
+                ) AS departure
+                WHERE d.payload::jsonb->>'source' = 'airlabs'
+                  AND d.payload::jsonb->>'flight_status' = 'scheduled'
+                  AND departure.scheduled_at >= CURRENT_TIMESTAMP
+                  AND departure.scheduled_at < CURRENT_TIMESTAMP + INTERVAL '24 hours'
+                  AND f.distance IS NOT NULL AND f.crs_elapsed_time IS NOT NULL
+                ORDER BY departure.scheduled_at, f.flight_key
+                LIMIT 150
+            """).fetchall()
+
     def _execute_inference_sync(self) -> PipelineOutput:
         if self.settings.live_api_mode and not Path(self.settings.model_path).is_file():
             return PipelineOutput(items=[], metadata={"ready": False, "reason": "model_missing", "message": "Install a pre-trained prediction_bundle.joblib in the model volume. Live mode never trains from CSV.", "total_predicted": 0})
@@ -222,8 +244,10 @@ class Pipeline:
         scaler = bundle["scaler"]
         regressor = bundle["regressor"]
         classifier = bundle["classifier"]
+        schedule_only = bundle.get("input_profile") == "schedule_only"
+        feature_names = SCHEDULE_FEATURE_NAMES if schedule_only else FEATURE_NAMES
 
-        candidates = self._load_candidate_flights_sync()
+        candidates = self._load_scheduled_departures_sync() if schedule_only else self._load_candidate_flights_sync()
         if not candidates:
             logger.warning("No candidate flights available for prediction.")
             return PipelineOutput(
@@ -232,12 +256,12 @@ class Pipeline:
                     "model_version": bundle.get("model_version", "prediction-v1.0"),
                     "ready": False,
                     "total_predicted": 0,
-                    "reason": "waiting_for_live_flights_and_weather",
+                    "reason": "waiting_for_scheduled_departures" if schedule_only else "waiting_for_live_flights_and_weather",
                 },
             )
 
         # Build feature matrix for inference
-        X_infer = np.array([_extract_features_row(c) for c in candidates], dtype=np.float64)
+        X_infer = np.array([_extract_features_row(c)[:len(feature_names)] for c in candidates], dtype=np.float64)
         X_infer_scaled = scaler.transform(X_infer)
 
         # Continuous delay predictions (minutes)
@@ -262,7 +286,7 @@ class Pipeline:
             else:
                 low_cnt += 1
 
-            items.append({
+            item = {
                 "flight": c.get("flight_code", "FL 000"),
                 "carrier": c.get("op_unique_carrier", "AA"),
                 "origin": c.get("origin", "JFK"),
@@ -271,15 +295,19 @@ class Pipeline:
                 "delay": delay_val,
                 "probability": prob_val,
                 "risk_level": risk_level,
-                "weather_source": c.get("weather_source", "demo"),
-                "weather_observed_at": c.get("weather_observed_at"),
-                "weather_defaults_used": [name for name in FEATURE_NAMES[6:] if c.get(name) is None],
-                "weather": {
-                    "temperature_c": round(float(X_infer[idx][6]), 1),
-                    "wind_speed_kmh": round(float(X_infer[idx][7]), 1),
-                    "visibility_km": round(float(X_infer[idx][9]), 1),
-                },
-            })
+            }
+            if not schedule_only:
+                item.update(
+                    weather_source=c.get("weather_source", "demo"),
+                    weather_observed_at=c.get("weather_observed_at"),
+                    weather_defaults_used=[name for name in FEATURE_NAMES[6:] if c.get(name) is None],
+                    weather={
+                        "temperature_c": round(float(X_infer[idx][6]), 1),
+                        "wind_speed_kmh": round(float(X_infer[idx][7]), 1),
+                        "visibility_km": round(float(X_infer[idx][9]), 1),
+                    },
+                )
+            items.append(item)
 
         total = len(items)
         avg_delay = round(float(np.mean([item["delay"] for item in items])), 1) if items else 0.0
@@ -312,7 +340,7 @@ class Pipeline:
                                     item["delay"],
                                     item["probability"],
                                     item["risk_level"],
-                                    json.dumps(item["weather"]),
+                                    json.dumps(item.get("weather", {})),
                                 )
                                 for item in items
                             ],
@@ -326,7 +354,8 @@ class Pipeline:
             "model_version": bundle.get("model_version", "prediction-v1.0"),
             "algorithm_regression": "HistGradientBoostingRegressor",
             "algorithm_classification": "HistGradientBoostingClassifier",
-            "feature_names": FEATURE_NAMES,
+            "feature_names": feature_names,
+            "input_profile": "schedule_only" if schedule_only else "schedule_and_weather",
             "trained_at": bundle.get("trained_at"),
             "training_samples": bundle.get("training_samples", 0),
             "model_metrics": bundle.get("metrics", {}),

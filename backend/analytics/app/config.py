@@ -1,3 +1,5 @@
+from zoneinfo import ZoneInfo
+
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -12,3 +14,6 @@ class Settings(BaseSettings):
     database_url: str = ""
     gemini_api_key: SecretStr | None = None
     gemini_model: str = Field(default="gemini-3.5-flash-lite", pattern=r"^gemini-[a-zA-Z0-9.-]+$")
+    forecast_airports: str = Field(default="JFK", pattern=r"^[A-Z]{3}(, *[A-Z]{3})*$")
+    forecast_timezone: ZoneInfo = ZoneInfo("America/New_York")
+    forecast_min_observed_days: int = Field(default=5, ge=1, le=28)

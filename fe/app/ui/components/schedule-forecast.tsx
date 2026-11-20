@@ -4,8 +4,10 @@ import { useEffect, useState } from "react";
 import { number } from "../flight-types";
 import { apiRequest } from "../api-client";
 
+type ForecastScope = { airports: string[]; timezone: string };
+
 type Forecast =
-  | { ready: false; forecast_date?: string }
+  | { ready: false; forecast_date: string; scope: ForecastScope; observed_days: number; required_days: number }
   | {
     ready: true;
     forecast_date: string;
@@ -14,6 +16,9 @@ type Forecast =
       classification: "high" | "low";
       classification_threshold: number;
       explanation: string;
+      scope: ForecastScope;
+      observed_days: number;
+      provisional: boolean;
     };
   };
 
@@ -27,25 +32,38 @@ export function ScheduleForecast() {
   const forecast = result?.request === request ? result.forecast : undefined;
   const error = result?.request === request ? result.error : undefined;
   const pending = result?.request !== request;
+  const scope = forecast?.ready ? forecast.payload.scope : forecast?.scope;
+  const needsHistory = forecast?.ready === false && forecast.observed_days < forecast.required_days;
 
   useEffect(() => {
     const controller = new AbortController();
-    requestForecast(request.method, controller.signal)
-      .then(next => {
+    let timer: ReturnType<typeof setTimeout>;
+    async function update(method: "GET" | "POST") {
+      try {
+        const next = await requestForecast(method, controller.signal);
         if (!controller.signal.aborted) setResult({ request, forecast: next });
-      })
-      .catch((error: unknown) => {
+      } catch (error) {
         if (!controller.signal.aborted) {
           setResult({ request, error: error instanceof Error ? error.message : "Lỗi khi gọi Analytics API." });
         }
-      });
-    return () => controller.abort();
+      } finally {
+        if (!controller.signal.aborted) timer = setTimeout(() => void update("GET"), 60_000);
+      }
+    }
+    void update(request.method);
+    return () => {
+      controller.abort();
+      clearTimeout(timer);
+    };
   }, [request]);
 
   return (
     <section className="analytics-panel schedule-forecast" aria-label="Dự báo lưu lượng ngày kế tiếp">
-      <h2>Dự báo lưu lượng ngày kế tiếp</h2>
-      <p>Ngày kế tiếp tính theo mốc cuối của dữ liệu chuyến bay đã lưu trong hệ thống.</p>
+      <h2>Dự báo lưu lượng ngày mai</h2>
+      {scope && <p>Chuyến khởi hành từ {scope.airports.join(", ")} trong phạm vi lịch bay đã thu thập. Múi giờ {scope.timezone}.</p>}
+      {forecast?.ready && forecast.payload.provisional && (
+        <p><strong>Dự báo sơ bộ</strong> · Dựa trên {forecast.payload.observed_days} ngày có dữ liệu.</p>
+      )}
       {forecast?.ready && (
         <dl className="schedule-forecast-summary">
           <div><dt>Ngày dự báo</dt><dd>{forecast.forecast_date}</dd></div>
@@ -63,12 +81,13 @@ export function ScheduleForecast() {
       {error && <p role="alert">Không lấy được dự báo. {error}</p>}
       {forecast && !forecast.ready && (
         <p role="status">
-          {forecast.forecast_date ? "Chưa có dự báo cho ngày " + forecast.forecast_date + "." : "Chưa có dữ liệu chuyến bay để dự báo."}
+          Chưa có dự báo cho ngày {forecast.forecast_date}.
+          {needsHistory && ` Đã có ${forecast.observed_days}/${forecast.required_days} ngày dữ liệu cần thiết.`}
         </p>
       )}
       <div className="analytics-controls">
         <button type="button" disabled={pending} onClick={() => setRequest({ method: "GET" })}>Tải lại</button>
-        <button type="button" disabled={pending || forecast?.ready === true || (forecast?.ready === false && !forecast.forecast_date)}
+        <button type="button" disabled={pending || forecast?.ready === true || needsHistory}
           onClick={() => setRequest({ method: "POST" })}>
           Tạo dự báo
         </button>

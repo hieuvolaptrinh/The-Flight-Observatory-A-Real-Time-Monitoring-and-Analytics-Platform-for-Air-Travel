@@ -1906,8 +1906,44 @@ td strong {
 }
 
 .trend-chart {
+  --hourly-volume: #93b8ed;
   padding: 8px 0 14px;
 }
+
+.hourly-chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin-bottom: 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.hourly-chart-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.hourly-chart-legend i {
+  display: inline-block;
+  width: 12px;
+  height: 8px;
+  border-radius: 2px;
+}
+
+.hourly-volume-key {
+  background: var(--hourly-volume);
+}
+
+.hourly-chart-legend .hourly-delay-key {
+  height: 3px;
+  background: var(--emerald);
+}
+
+.hourly-volume-bar { fill: var(--hourly-volume); }
+.hourly-delay-point { fill: var(--emerald); }
+.hourly-delay-line { stroke: var(--emerald); }
 
 .trend-chart svg {
   width: 100%;

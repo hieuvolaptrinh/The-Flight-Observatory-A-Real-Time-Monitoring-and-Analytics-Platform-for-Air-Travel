@@ -8,7 +8,7 @@ from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app.config import Settings
-from app.forecast import forecast
+from app.forecast import forecast, schedule_forecasts
 from app.jobs import JobAlreadyRunning, JobRunner
 from app.pipeline import Pipeline, summary
 from app.schemas import Job, PipelineOutput, Results
@@ -56,15 +56,17 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
     async def lifespan(app: FastAPI):
         runner = JobRunner(settings.service_name, active)
         app.state.runner = runner
-        task = (
-            asyncio.create_task(runner.schedule(settings.job_interval_seconds))
-            if settings.scheduler_enabled else None
-        )
+        tasks = []
+        if settings.scheduler_enabled:
+            tasks.append(asyncio.create_task(runner.schedule(settings.job_interval_seconds)))
+            if settings.gemini_api_key:
+                tasks.append(asyncio.create_task(schedule_forecasts(active)))
         try:
             yield
         finally:
-            if task is not None:
+            for task in tasks:
                 task.cancel()
+            for task in tasks:
                 with suppress(asyncio.CancelledError):
                     await task
 
@@ -132,8 +134,11 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
         saved = snapshot["payload"][field] if snapshot else {}
         grain = saved.get("auto_grain", "week") if query.grain == "auto" else query.grain
         component = saved.get(grain, {"items": [], "ready": False, "seasonal_period": None})
-        return query.response(query.slice(component["items"]), grain=grain, ready=component["ready"],
-                              seasonal_period=component["seasonal_period"], summary=summary(snapshot))
+        response = query.response(query.slice(component["items"]), grain=grain, ready=component["ready"],
+                                  seasonal_period=component["seasonal_period"], summary=summary(snapshot))
+        if field == "seasonality" and not component["ready"]:
+            response["hourly_profile"] = saved.get("hourly_profile", [])
+        return response
 
     @app.get("/trend", tags=["charts"])
     async def trend(query: Annotated[Component, Query()]):
@@ -163,7 +168,8 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
         result = await forecast(active)
         if result["ready"]:
             payload = result.pop("payload")
-            result.update(classification=payload["classification"], threshold=payload["classification_threshold"])
+            result.update(classification=payload["classification"], threshold=payload["classification_threshold"],
+                          observed_days=payload["observed_days"], provisional=payload["provisional"])
         return result
 
     @app.get("/jobs/latest", response_model=Job | None, tags=["operations"])

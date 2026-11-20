@@ -43,6 +43,7 @@ class JobRunner:
         source: str = "all",
         cluster_id: int | None = None,
         include_overview: bool = False,
+        hourly_days: int = 1,
     ) -> Results:
         queried = self.pipeline.repository.query_flights(
             origin=origin,
@@ -56,6 +57,7 @@ class JobRunner:
             source=source,
             cluster_id=cluster_id,
             include_overview=include_overview,
+            hourly_days=hourly_days,
         )
         return Results(
             service=self.service,

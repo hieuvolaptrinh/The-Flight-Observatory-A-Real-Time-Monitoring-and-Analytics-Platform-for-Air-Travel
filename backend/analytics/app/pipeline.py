@@ -35,14 +35,25 @@ class Pipeline:
             payload["correlation"] = await self._correlations(db, *bounds)
             for field, source_field in (("trend", "trend"), ("seasonality", "seasonal")):
                 components = {}
-                for grain in ("week", "month"):
+                grains = ("day", "week", "month") if field == "trend" else ("week", "month")
+                for grain in grains:
                     rows, period = decompose(payload["series"], grain)
                     items = [{"period_start": row["period_start"], "flight_count": row["flight_count"],
                               source_field: row[source_field]} for row in rows if row[source_field] is not None]
                     components[grain] = {"items": items, "ready": bool(items),
                         "seasonal_period": period if source_field == "seasonal" else None}
                 months = sum(row["grain"] == "month" and row["flight_count"] > 0 for row in payload["series"])
-                components["auto_grain"] = "month" if months >= (24 if field == "seasonality" else 6) else "week"
+                auto_grain = "month" if months >= (24 if field == "seasonality" else 6) else "week"
+                if field == "trend" and auto_grain == "week" and not components["week"]["ready"]:
+                    auto_grain = "day"
+                components["auto_grain"] = auto_grain
+                if field == "seasonality" and not components[auto_grain]["ready"]:
+                    hours = await db.execute("""
+                        SELECT extract(hour FROM scheduled_dep_local)::int %% 24 AS hour, count(*) AS flight_count
+                        FROM flight_data.flights WHERE flight_date >= %s AND flight_date < %s
+                        GROUP BY 1 ORDER BY 1
+                    """, bounds)
+                    components["hourly_profile"] = await hours.fetchall()
                 payload[field] = components
             # The SQL aggregate and these derived patterns commit together.
             await db.execute("""UPDATE analytics.schedule_snapshots SET payload=%s
@@ -124,13 +135,18 @@ def decompose(series, grain):
     if grain == "month":
         positions = [(day.year - dates[0].year) * 12 + day.month - dates[0].month for day in dates]
         period = 12
-    else:
+    elif grain == "week":
         positions = [(day - dates[0]).days // 7 for day in dates]
         period = 4
+    else:
+        positions = [(day - dates[0]).days for day in dates]
+        period = None
     counts = [row["flight_count"] for row in points]
     x_avg, y_avg = mean(positions), mean(counts)
     slope = sum((x - x_avg) * (y - y_avg) for x, y in zip(positions, counts)) / sum((x - x_avg) ** 2 for x in positions)
     trend = [y_avg + slope * (x - x_avg) for x in positions]
+    if period is None:
+        return [row | {"trend": round(fitted, 2)} for row, fitted in zip(points, trend)], None
     groups = [[] for _ in range(period)]
     for x, y, fitted in zip(positions, counts, trend):
         groups[x % period].append(y - fitted)

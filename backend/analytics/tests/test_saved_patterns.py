@@ -1,14 +1,17 @@
 import asyncio
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 import os
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 from fastapi.testclient import TestClient
 import psycopg
+from psycopg.conninfo import make_conninfo
 from psycopg.rows import dict_row
 import pytest
 
 from app.config import Settings
+from app.forecast import Estimate
 from app.main import create_app
 from app.pipeline import Pipeline
 
@@ -117,3 +120,76 @@ def test_filtered_run_and_validation(client, database):
     assert client.get("/summary").json() == default
     assert client.post("/run",json={"date_from":"2025-01-06"}).status_code == 422
     assert client.post("/run",json={"date_from":"2025-01-10","date_to":"2025-01-01"}).status_code == 422
+
+
+def test_short_history_shows_daily_trend_and_hourly_profile(client, database):
+    with psycopg.connect(database) as db:
+        db.execute("""
+            UPDATE flight_data.flights
+            SET flight_date = DATE '2025-01-06' + mod(flight_id, 2)::int, flight_number = flight_id::text
+        """)
+    publish(client)
+    trend = client.get("/trend").json()
+    assert trend["ready"] and trend["grain"] == "day" and len(trend["items"]) == 2
+    assert not client.get("/trend?grain=week").json()["ready"]
+    seasonality = client.get("/seasonality").json()
+    assert not seasonality["ready"] and not seasonality["items"]
+    assert sum(row["flight_count"] for row in seasonality["hourly_profile"]) == 20
+
+
+def test_forecast_requires_recent_live_days_and_reuses_exact_scope(database, monkeypatch):
+    database = make_conninfo(database, options="-c search_path=forecast_test,public")
+    settings = Settings(
+        database_url=database, scheduler_enabled=False,
+        forecast_airports="JFK,LGA", forecast_min_observed_days=5,
+    )
+    today = datetime.now(settings.forecast_timezone).date()
+    target = today + timedelta(days=1)
+    estimate = AsyncMock(return_value=Estimate(predicted_flight_count=3, explanation="Dữ liệu kiểm thử."))
+    monkeypatch.setattr("app.forecast.ask_gemini", estimate)
+    with psycopg.connect(database) as db:
+        db.execute("DELETE FROM analytics.forecasts")
+        db.execute("CREATE SCHEMA IF NOT EXISTS forecast_test")
+        db.execute("CREATE TABLE IF NOT EXISTS forecast_test.ingested_flights (flight_key text PRIMARY KEY, fl_date text, origin text)")
+        db.execute("CREATE TABLE IF NOT EXISTS forecast_test.live_flight_details (flight_key text PRIMARY KEY)")
+        db.execute("TRUNCATE forecast_test.live_flight_details, forecast_test.ingested_flights")
+        rows = [(str(day), (today - timedelta(days=day)).isoformat(), "JFK") for day in range(1, 6)]
+        rows += [("today", today.isoformat(), "LGA"), ("future", target.isoformat(), "JFK"),
+                 ("other", rows[0][1], "LAX"), ("csv", rows[0][1], "JFK")]
+        with db.cursor() as cursor:
+            cursor.executemany("INSERT INTO ingested_flights VALUES (%s,%s,%s)", rows)
+            cursor.executemany(
+                "INSERT INTO live_flight_details VALUES (%s)", [(key,) for key, _, _ in rows if key not in {"5", "csv"}],
+            )
+
+    loop_options = {"loop_factory": asyncio.SelectorEventLoop} if os.name == "nt" else {}
+    with TestClient(create_app(settings), backend_options=loop_options) as client:
+        pending = client.get("/forecast").json()
+        assert pending["forecast_date"] == target.isoformat()
+        assert pending["observed_days"] == 4
+        assert client.post("/forecast").status_code == 409
+        estimate.assert_not_awaited()
+        demo = settings.model_copy(update={"forecast_min_observed_days": 1})
+        with TestClient(create_app(demo), backend_options=loop_options) as demo_client:
+            preliminary = demo_client.post("/forecast").json()["payload"]
+            assert preliminary["provisional"] is True
+            assert preliminary["observed_days"] == 4
+            assert demo_client.get("/classification").json()["provisional"] is True
+        assert client.get("/forecast").json()["ready"] is False
+        estimate.reset_mock()
+        with psycopg.connect(database) as db:
+            db.execute("INSERT INTO live_flight_details VALUES ('5')")
+        assert client.post("/forecast").json()["payload"]["classification"] == "high"
+        assert client.get("/classification").json()["classification"] == "high"
+        assert client.post("/forecast").status_code == 200
+        estimate.assert_awaited_once()
+        _, history, _, airports = estimate.await_args.args
+        assert airports == ["JFK", "LGA"]
+        assert [row["flight_count"] for row in history] == [1] * 5
+
+    estimate.return_value = Estimate(predicted_flight_count=0, explanation="Dữ liệu kiểm thử.")
+    jfk_only = settings.model_copy(update={"forecast_airports": "JFK"})
+    with TestClient(create_app(jfk_only), backend_options=loop_options) as client:
+        assert client.get("/forecast").json()["ready"] is False
+        assert client.post("/forecast").json()["payload"]["classification"] == "low"
+    assert estimate.await_count == 2

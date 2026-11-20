@@ -31,7 +31,6 @@ export function useFlightObservatory(view: ViewMode) {
   const [airport, setAirport] = useState("all");
   const [destAirport, setDestAirport] = useState("all");
   const [carrier, setCarrier] = useState("all");
-  const [flightSource, setFlightSource] = useState<"airlabs" | "legacy" | "all">("airlabs");
   const [rankBy, setRankBy] = useState<"airports" | "carriers">("airports");
   const [risk, setRisk] = useState("all");
   const [flightStatus, setFlightStatus] = useState("all");
@@ -39,7 +38,7 @@ export function useFlightObservatory(view: ViewMode) {
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [sort, setSort] = useState("time");
   const [pageState, setPageState] = useState({ key: "", page: 1 });
-  const [pageSize, setPageSize] = useState(12);
+  const [pageSize, setPageSize] = useState(25);
   const [updated, setUpdated] = useState<string | null>(null);
   const [toast, setToast] = useState("");
   const [busy, setBusy] = useState(false);
@@ -76,7 +75,7 @@ export function useFlightObservatory(view: ViewMode) {
   // Machine Learning delay prediction state (Prediction Service - STT 12 & 13)
   const [mlPredictions, setMlPredictions] = useState<PredictionItem[] | null>(null);
   const [predictionMeta, setPredictionMeta] = useState<Record<string, unknown> | null>(null);
-  const filterKey = JSON.stringify([airport, destAirport, carrier, flightStatus, debouncedSearch, sort, pageSize, flightSource, selectedClusterId]);
+  const filterKey = JSON.stringify([airport, destAirport, carrier, flightStatus, debouncedSearch, sort, pageSize, selectedClusterId]);
   const currentPage = pageState.key === filterKey ? pageState.page : 1;
   const setCurrentPage = useCallback((value: number | ((page: number) => number)) => {
     setPageState(previous => ({ key: filterKey,
@@ -179,8 +178,11 @@ export function useFlightObservatory(view: ViewMode) {
         offset: String((currentPage - 1) * pageSize),
         sort,
       });
-      if (isOverview || isFlights) params.set("source", flightSource);
-      if (isOverview) params.set("overview", "true");
+      if (isOverview || isFlights) params.set("source", "airlabs");
+      if (isOverview) {
+        params.set("overview", "true");
+        params.set("hourly_days", "7");
+      }
       if (isFlights && selectedClusterId !== null) params.set("cluster_id", String(selectedClusterId));
       if (airport !== "all") params.set("origin", airport);
       if (destAirport !== "all") params.set("dest", destAirport);
@@ -222,7 +224,7 @@ export function useFlightObservatory(view: ViewMode) {
         if (requestId === flightRequest.current) setBusy(false);
       }
     },
-    [airport, destAirport, carrier, flightStatus, debouncedSearch, sort, currentPage, pageSize, notify, isOverview, isFlights, flightSource, selectedClusterId, setApiError]
+    [airport, destAirport, carrier, flightStatus, debouncedSearch, sort, currentPage, pageSize, notify, isOverview, isFlights, selectedClusterId, setApiError]
   );
 
   const triggerClusteringRun = useCallback(async () => {
@@ -486,8 +488,6 @@ export function useFlightObservatory(view: ViewMode) {
     setDestAirport,
     carrier,
     setCarrier,
-    flightSource,
-    setFlightSource,
     rankBy,
     setRankBy,
     risk,

@@ -7,7 +7,7 @@ Supports both PostgreSQL (via psycopg) and SQLite (via sqlite3).
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 import logging
 import json
 from pathlib import Path
@@ -349,6 +349,7 @@ class FlightRepository:
         source: str = "all",
         cluster_id: int | None = None,
         include_overview: bool = False,
+        hourly_days: int = 1,
     ) -> dict[str, Any]:
         """Query flights from DB with parameterized filters, whitelist sorting, pagination, and KPIs."""
         conditions = []
@@ -433,15 +434,21 @@ class FlightRepository:
             ]
             origins, dests, carriers = facets
             hourly = []
+            hourly_date_from = None
             airports = []
             if include_overview:
                 join = " AND " if " WHERE " in filtered else " WHERE "
-                hourly = [dict(row) for row in conn.execute(store.sql("""
-                    SELECT f.dep_hour AS hour, COUNT(*) AS flights, COUNT(f.delay_minutes) AS known,
-                           SUM(CASE WHEN f.is_delayed = 1 THEN 1 ELSE 0 END) AS delayed
-                """ + filtered + join + """
-                    f.fl_date = ? AND f.dep_hour BETWEEN 0 AND 23 GROUP BY f.dep_hour ORDER BY f.dep_hour
-                """), [*params, stats_row["last_flight_date"]]).fetchall()]
+                if stats_row["last_flight_date"]:
+                    last_day = date.fromisoformat(stats_row["last_flight_date"])
+                    first_day = date.fromisoformat(stats_row["first_flight_date"])
+                    hourly_date_from = max(first_day, last_day - timedelta(days=hourly_days - 1)).isoformat()
+                    hourly = [dict(row) for row in conn.execute(store.sql("""
+                        SELECT f.dep_hour AS hour, COUNT(*) AS flights, COUNT(f.delay_minutes) AS known,
+                               SUM(CASE WHEN f.is_delayed = 1 THEN 1 ELSE 0 END) AS delayed
+                    """ + filtered + join + """
+                        f.fl_date BETWEEN ? AND ? AND f.dep_hour BETWEEN 0 AND 23
+                        GROUP BY f.dep_hour ORDER BY f.dep_hour
+                    """), [*params, hourly_date_from, last_day.isoformat()]).fetchall()]
                 airports = [dict(row) for row in conn.execute(store.sql("""
                     SELECT f.origin AS code, COUNT(*) AS flight_count, COUNT(f.delay_minutes) AS known_count,
                            AVG(f.delay_minutes) AS avg_delay,
@@ -500,6 +507,7 @@ class FlightRepository:
             ],
             "source": source,
             "hourly": hourly,
+            "hourly_date_from": hourly_date_from,
             "airport_stats": airports,
             "carrier_stats": [dict(row) for row in carrier_rows] if include_overview else [],
             "last_batch": last_batch_dict,

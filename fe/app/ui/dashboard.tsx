@@ -11,7 +11,6 @@ import { ClusteringView } from "./views/clustering-view";
 import { ForecastView } from "./views/forecast-view";
 import { OverviewView } from "./views/overview-view";
 import { AnalyticsView } from "./views/analytics-view";
-import { CustomSelect } from "./components/custom-select";
 
 export default function Dashboard({ view }: { view: ViewMode }) {
   const obs = useFlightObservatory(view);
@@ -26,7 +25,19 @@ export default function Dashboard({ view }: { view: ViewMode }) {
     || service === "prediction" && obs.isForecast || service === "raw" && obs.isFlights && obs.dataLayer === "raw"
   ));
   const predictionReason = obs.predictionMeta?.reason;
-
+  const predictionStatus = obs.apiErrors.prediction
+    ? "Chưa đọc được kết quả từ dịch vụ Prediction."
+    : obs.mlPredictions === null
+      ? "Đang tải dự báo độ trễ…"
+      : predictionReason === "model_missing"
+        ? "Dịch vụ Prediction chưa có model đã huấn luyện (prediction_bundle.joblib)."
+        : predictionReason === "waiting_for_live_flights_and_weather"
+          ? "Đang chờ chuyến bay có dữ liệu thời tiết phù hợp."
+          : predictionReason === "waiting_for_scheduled_departures"
+            ? "Đang chờ chuyến AirLabs sắp khởi hành trong 24 giờ tới."
+            : obs.mlPredictions.length
+              ? "Không có chuyến bay phù hợp với bộ lọc hiện tại."
+              : "Dịch vụ Prediction chưa có kết quả dự báo độ trễ.";
 
   return (
     <div className="app-shell">
@@ -36,7 +47,7 @@ export default function Dashboard({ view }: { view: ViewMode }) {
         apiMode={obs.isAnalytics ? "gateway" : obs.apiMode}
         busy={obs.busy}
         onTriggerClustering={obs.isForecast ? obs.triggerPredictionRun : obs.triggerClusteringRun}
-        runLabel={obs.isForecast ? "Chạy dự báo" : "Chạy K-Means"}
+        runLabel={obs.isForecast ? "Chạy dự báo độ trễ" : "Chạy K-Means"}
         showRun={obs.isForecast || obs.isFlights || obs.isClustering}
         onExportCsv={obs.exportCsv}
       />
@@ -45,18 +56,6 @@ export default function Dashboard({ view }: { view: ViewMode }) {
         {visibleErrors.map(([service, error]) => <p className="api-error" role="alert" key={service}>{error}</p>)}
         <div className="dashboard-context">
           <div className="dashboard-source-bar">
-            {(obs.isOverview || obs.isFlights) && (
-              <CustomSelect ariaLabel="Nguồn chuyến bay" value={obs.flightSource} size="compact"
-                onChange={value => {
-                  obs.resetFilters();
-                  obs.setFlightSource(value as typeof obs.flightSource);
-                }}
-                options={[
-                  { value: "airlabs", label: "AirLabs" },
-                  { value: "legacy", label: "Lịch sử đã lưu" },
-                  { value: "all", label: "Tất cả nguồn" },
-                ]} />
-            )}
             <details className="dashboard-source-details">
               <summary>
                 <strong>Thông tin dữ liệu</strong>
@@ -79,11 +78,6 @@ export default function Dashboard({ view }: { view: ViewMode }) {
               </div>
             </details>
           </div>
-          {obs.isForecast && !obs.filteredPredictions.length && (
-            <p className="analytics-status">{predictionReason === "model_missing"
-              ? "Prediction API đã kết nối nhưng chưa có model đã huấn luyện để dự báo."
-              : "Chưa có dự báo cho bộ lọc này. Cần chuyến bay và thời tiết phù hợp."}</p>
-          )}
           {!obs.isAnalytics && !obs.isClustering && (
             <FilterBar
               airport={obs.airport}
@@ -181,6 +175,8 @@ export default function Dashboard({ view }: { view: ViewMode }) {
         {obs.isForecast && (
           <ForecastView
             scoped={obs.scoped}
+            predictionStatus={predictionStatus}
+            scheduleOnly={obs.predictionMeta?.input_profile === "schedule_only"}
             filteredPredictions={obs.filteredPredictions}
             forecastAvg={obs.forecastAvg}
             highCount={obs.highCount}
@@ -202,6 +198,7 @@ export default function Dashboard({ view }: { view: ViewMode }) {
             delayed={obs.delayed}
             avg={obs.avg}
             day={obs.serverMeta?.last_flight_date ?? null}
+            hourlyDateFrom={obs.serverMeta?.hourly_date_from ?? null}
             hourly={obs.serverMeta?.hourly ?? []}
             onTime={obs.statusCounts.on_time}
             unknown={obs.statusCounts.unknown}

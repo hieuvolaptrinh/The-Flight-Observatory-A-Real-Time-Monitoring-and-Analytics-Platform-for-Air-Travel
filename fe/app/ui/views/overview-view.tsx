@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { AirportStat, CarrierStat, HourlyFlightStat, number } from "../flight-types";
+import { AirportStat, CarrierStat, HourlyFlightStat, flightDateRange, number } from "../flight-types";
 import { Icon } from "../components/icons";
 import { Metric } from "../components/metric-card";
 import { TrendChart } from "../components/trend-chart";
@@ -12,6 +12,7 @@ interface OverviewViewProps {
   delayed: number;
   avg: number;
   day: string | null;
+  hourlyDateFrom: string | null;
   hourly: HourlyFlightStat[];
   onTime: number;
   unknown: number;
@@ -27,6 +28,7 @@ export function OverviewView({
   delayed,
   avg,
   day,
+  hourlyDateFrom,
   hourly,
   onTime,
   unknown,
@@ -81,13 +83,9 @@ export function OverviewView({
         <section className="panel">
           <div className="panel-heading">
             <div>
-              <h2>Nhịp độ khai thác &amp; Tỷ lệ trễ theo khung giờ</h2>
-              <p>{day ? `Giờ khởi hành địa phương · ${day}` : "Chọn bộ lọc có dữ liệu chuyến bay"}</p>
+              <h2>Lưu lượng và tỷ lệ trễ theo giờ</h2>
+              <p>{day ? `Giờ khởi hành địa phương · ${flightDateRange(hourlyDateFrom ?? day, day)}` : "Chọn bộ lọc có dữ liệu chuyến bay"}</p>
             </div>
-            <span className="legend">
-              <i />
-              Tỷ lệ trễ (%)
-            </span>
           </div>
           <TrendChart hourly={hourly} />
         </section>

@@ -13,6 +13,8 @@ import { ScheduleForecast } from "../components/schedule-forecast";
 
 interface ForecastViewProps {
   scoped: PredictionItem[];
+  predictionStatus: string;
+  scheduleOnly: boolean;
   filteredPredictions: PredictionItem[];
   forecastAvg: number;
   highCount: number;
@@ -23,6 +25,8 @@ interface ForecastViewProps {
 
 export function ForecastView({
   scoped,
+  predictionStatus,
+  scheduleOnly,
   filteredPredictions,
   forecastAvg,
   highCount,
@@ -64,9 +68,26 @@ export function ForecastView({
     return pages;
   }, [safePage, totalPages]);
 
+  if (!scoped.length) {
+    return (
+      <>
+        <ScheduleForecast />
+        <section className="analytics-panel" aria-label="Dự báo độ trễ từng chuyến">
+          <h2>Dự báo độ trễ từng chuyến</h2>
+          <p role="status">{predictionStatus}</p>
+        </section>
+      </>
+    );
+  }
+
   return (
     <>
       <ScheduleForecast />
+      {scheduleOnly && (
+        <p className="analytics-status">
+          Dự báo trễ khởi hành cho các chuyến trong 24 giờ tới, từ model huấn luyện trên lịch bay và giờ cất cánh thực tế AirLabs.
+        </p>
+      )}
       <section className="metrics" aria-label="Chỉ số dự báo">
         <Metric
           title="Chuyến bay được đánh giá"
@@ -111,7 +132,6 @@ export function ForecastView({
             <span className="chart-unit">ĐƠN VỊ: PHÚT</span>
           </div>
           <div className="airport-bars">
-            {!scoped.length && <p className="analytics-empty">Chưa có kết quả dự báo để vẽ biểu đồ.</p>}
             {[...new Set(scoped.map(prediction => prediction.origin))].slice(0, 8).map(code => {
               const rows = scoped.filter(p => p.origin === code);
               const value = rows.length
@@ -207,6 +227,9 @@ export function ForecastView({
               </tr>
             </thead>
             <tbody>
+              {filteredPredictions.length === 0 && (
+                <tr><td colSpan={6}>Không có chuyến bay phù hợp với mức nguy cơ đã chọn.</td></tr>
+              )}
               {paginatedPredictions.map((p, idx) => (
                 <tr key={`${p.flight}-${idx}`}>
                   <td>

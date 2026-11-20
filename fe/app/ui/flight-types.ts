@@ -69,6 +69,7 @@ interface FlightGroupStat {
 
 export interface ServerFlightMeta {
   hourly?: HourlyFlightStat[];
+  hourly_date_from?: string | null;
   airport_stats?: FlightGroupStat[];
   carrier_stats?: FlightGroupStat[];
   unknown_delay_count?: number;

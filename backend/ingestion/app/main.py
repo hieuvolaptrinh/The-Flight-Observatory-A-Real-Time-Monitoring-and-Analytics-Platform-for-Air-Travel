@@ -138,6 +138,7 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
         source: Literal["all", "airlabs", "legacy"] = "all",
         cluster_id: int | None = Query(default=None, ge=0),
         overview: bool = False,
+        hourly_days: int = Query(1, ge=1, le=30, description="Days ending on the latest matching flight date for hourly overview"),
     ):
         runner: JobRunner = app.state.runner
         return await asyncio.to_thread(
@@ -153,6 +154,7 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
             source=source,
             cluster_id=cluster_id,
             include_overview=overview,
+            hourly_days=hourly_days,
         )
 
     @app.delete("/flights", tags=["operations"])

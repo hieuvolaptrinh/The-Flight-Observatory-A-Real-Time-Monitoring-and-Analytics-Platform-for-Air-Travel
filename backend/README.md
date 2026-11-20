@@ -77,9 +77,16 @@ Weather hiện tại dùng cho demo chuyến gần thời điểm hiện tại. 
 
 ## 5. Mô hình
 
-Prediction cần artifact **prediction_bundle.joblib** đã huấn luyện theo 12 feature hiện có. Không có artifact thì service vẫn healthy nhưng `/results` báo `ready=false`, `reason=model_missing`; không tự sinh dự báo hoặc train CSV.
+Prediction cần artifact **prediction_bundle.joblib**. Huấn luyện ở chế độ live đọc nhãn trễ khởi hành thực tế của AirLabs từ PostgreSQL, cần tối thiểu 100 mẫu và có cả hai lớp trong tập train. Model dùng sáu đặc trưng lịch bay và kiểm thử trên các chuyến mới hơn theo thời gian. Chạy từ thư mục gốc khi PostgreSQL đã hoạt động:
 
-Để đưa model có sẵn vào volume (thay đường dẫn trên máy):
+```powershell
+docker compose -f backend/docker-compose.yml run --rm --no-deps prediction python -m app.train
+docker compose -f backend/docker-compose.yml restart prediction
+```
+
+Artifact nằm trong volume `prediction_models`. Khởi động lại để service đọc model mới. Trong lúc thiếu artifact, `/results` báo `ready=false` và `reason=model_missing`.
+
+Để đưa model có sẵn vào volume, thay đường dẫn trên máy:
 
 ```powershell
 docker compose cp ./prediction/models/prediction_bundle.joblib prediction:/service/models/prediction_bundle.joblib

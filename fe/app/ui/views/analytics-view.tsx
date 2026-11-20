@@ -18,8 +18,9 @@ type ScatterRow = {
   scheduled_elapsed_min: number;
 };
 type ComponentResponse = {
-  grain: "week" | "month";
+  grain: Grain;
   items: { period_start: string; trend?: number; seasonal?: number }[];
+  hourly_profile?: { hour: number; flight_count: number }[];
 };
 type Correlation = {
   variables: string[];
@@ -336,7 +337,9 @@ export function AnalyticsView() {
               <Plot label="Đường thời gian số chuyến bay" xUnit="Ngày bắt đầu kỳ" yUnit="Chuyến" maxGap={maxPeriodGap[grain]}
                 points={line.map(row => timePoint(row.period_start, row.flight_count))} />
             </Panel>
-            <Panel title="Xu hướng lưu lượng" description={"Xu hướng sau khi gom theo " + grains[data.trend.grain].toLowerCase() + " · Cần ít nhất 2 kỳ có chuyến"}>
+            <Panel title="Xu hướng lưu lượng" description={data.trend.grain === "day"
+              ? "Xu hướng ngắn hạn theo ngày · Số chuyến trong mẫu thu thập."
+              : "Xu hướng sau khi gom theo " + grains[data.trend.grain].toLowerCase() + " · Cần ít nhất 2 kỳ có chuyến"}>
               <Plot label="Đường xu hướng số chuyến bay" xUnit="Ngày bắt đầu kỳ" yUnit="Chuyến" maxGap={maxPeriodGap[data.trend.grain]}
                 points={data.trend.items.flatMap(row => row.trend == null ? [] : [timePoint(row.period_start, row.trend)])} />
             </Panel>
@@ -352,11 +355,20 @@ export function AnalyticsView() {
                   [{ x: row.distance_miles, y: row.scheduled_elapsed_min,
                     label: number(row.distance_miles) + " dặm · " + number(row.scheduled_elapsed_min) + " phút" }])} />
             </Panel>
-            <Panel title="Mùa vụ lưu lượng" description={"Mùa vụ theo " + grains[data.seasonality.grain].toLowerCase() + " · Cần dữ liệu đủ hai chu kỳ"}>
-              <Plot label="Đường mùa vụ số chuyến bay" xUnit="Ngày bắt đầu kỳ" yUnit="Chuyến" maxGap={maxPeriodGap[data.seasonality.grain]}
-                points={data.seasonality.items.flatMap(row =>
-                  row.seasonal == null ? [] : [timePoint(row.period_start, row.seasonal)])} />
-            </Panel>
+            {data.seasonality.hourly_profile?.length ? (
+              <Panel title="Phân bố lưu lượng theo giờ" description="Số chuyến theo giờ địa phương của sân bay đi. Mùa vụ cần thêm dữ liệu qua nhiều chu kỳ.">
+                <Plot mode="bar" label="Số chuyến quan sát theo giờ khởi hành" xUnit="Giờ địa phương" yUnit="Chuyến"
+                  points={data.seasonality.hourly_profile.map(row => ({
+                    x: row.hour, y: row.flight_count, label: row.hour + ":00 · " + number(row.flight_count) + " chuyến",
+                  }))} />
+              </Panel>
+            ) : (
+              <Panel title="Mùa vụ lưu lượng" description={"Mùa vụ theo " + grains[data.seasonality.grain].toLowerCase() + " · Cần dữ liệu đủ hai chu kỳ"}>
+                <Plot label="Đường mùa vụ số chuyến bay" xUnit="Ngày bắt đầu kỳ" yUnit="Chuyến" maxGap={maxPeriodGap[data.seasonality.grain]}
+                  points={data.seasonality.items.flatMap(row =>
+                    row.seasonal == null ? [] : [timePoint(row.period_start, row.seasonal)])} />
+              </Panel>
+            )}
             <Panel title="Ma trận tương quan Pearson" description="Hệ số tương quan giữa các biến trong khoảng dữ liệu phân tích.">
               {data.correlation.variables.length > 0 ? (
                 <table className="analytics-matrix">
