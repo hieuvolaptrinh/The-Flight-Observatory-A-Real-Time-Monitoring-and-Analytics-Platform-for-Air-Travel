@@ -8,6 +8,8 @@ Builds and saves models/prediction_bundle.joblib containing:
 """
 from __future__ import annotations
 
+import argparse
+from collections import Counter
 import csv
 from datetime import datetime, timezone
 import hashlib
@@ -249,16 +251,54 @@ def _load_schedule_training_rows(settings: Settings) -> list[dict[str, Any]]:
     return rows[::-1]
 
 
-def train_and_save_model(settings: Settings | None = None) -> dict[str, Any]:
+def _load_bts_training_rows(settings: Settings) -> list[dict[str, Any]]:
+    with psycopg.connect(settings.source_database_url, row_factory=dict_row) as conn:
+        rows = conn.execute("""
+            SELECT f.origin, f.dest, f.scheduled_dep_local::text AS crs_dep_time, f.day_of_week,
+                   f.distance_miles AS distance, f.scheduled_elapsed_min AS crs_elapsed_time,
+                   b.scheduled_departure_utc AS scheduled_at,
+                   o.dep_delay_min::double precision AS observed_delay
+            FROM flight_data.bts_imported_flights AS b
+            JOIN flight_data.flight_schedule AS f USING (flight_id)
+            JOIN flight_data.flight_outcomes AS o USING (flight_id)
+            WHERE o.dep_delay_min IS NOT NULL AND NOT o.cancelled AND NOT o.diverted
+              AND f.distance_miles > 0 AND f.scheduled_elapsed_min > 0
+            ORDER BY scheduled_at DESC, f.flight_id DESC
+            LIMIT %s
+        """, (settings.max_sample_rows,)).fetchall()
+    return rows[::-1]
+
+
+def _load_combined_training_rows(settings: Settings) -> list[dict[str, Any]]:
+    with psycopg.connect(settings.source_database_url, row_factory=dict_row) as conn:
+        rows = conn.execute("""
+            SELECT origin, dest, scheduled_dep_local::text AS crs_dep_time, day_of_week,
+                   distance, crs_elapsed_time, scheduled_at, delay_minutes AS observed_delay, source
+            FROM flight_data.model_flights
+            WHERE delay_minutes IS NOT NULL AND scheduled_at IS NOT NULL
+              AND distance > 0 AND crs_elapsed_time > 0
+            ORDER BY scheduled_at DESC, source, source_id
+            LIMIT %s
+        """, (settings.max_sample_rows,)).fetchall()
+    return rows[::-1]
+
+
+def train_and_save_model(settings: Settings | None = None, *, training_source: str = "airlabs") -> dict[str, Any]:
     """Train Regression & Classification models and persist the artifact."""
     settings = settings or Settings()
+    schedule_only = settings.live_api_mode or training_source in ("bts", "combined")
     feature_names = FEATURE_NAMES
-    if settings.live_api_mode:
+    if schedule_only:
         feature_names = SCHEDULE_FEATURE_NAMES
-        rows = _load_schedule_training_rows(settings)
+        loader = {
+            "airlabs": _load_schedule_training_rows,
+            "bts": _load_bts_training_rows,
+            "combined": _load_combined_training_rows,
+        }[training_source]
+        rows = loader(settings)
         if len(rows) < MIN_TRAINING_ROWS:
             raise ValueError(
-                f"Need {MIN_TRAINING_ROWS} observed AirLabs departure delays. Found {len(rows)}."
+                f"Need {MIN_TRAINING_ROWS} observed {training_source} departure delays. Found {len(rows)}."
             )
         X = np.array([_extract_features_row(row)[:len(feature_names)] for row in rows], dtype=np.float64)
         y_reg = np.maximum(0, np.array([row["observed_delay"] for row in rows], dtype=np.float64))
@@ -308,10 +348,15 @@ def train_and_save_model(settings: Settings | None = None) -> dict[str, Any]:
     baseline_labels = np.full_like(y_cls_test, majority_label)
 
     bundle = {
-        "model_version": "prediction-schedule-v1.1" if settings.live_api_mode else "prediction-v1.1",
-        "input_profile": "schedule_only" if settings.live_api_mode else "schedule_and_weather",
+        "model_version": ("prediction-combined-schedule-v1.0" if training_source == "combined"
+                          else "prediction-bts-schedule-v1.0" if training_source == "bts"
+                          else "prediction-schedule-v1.1" if schedule_only else "prediction-v1.1"),
+        "input_profile": "schedule_only" if schedule_only else "schedule_and_weather",
+        "training_source": training_source if schedule_only else "csv",
         "trained_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "training_samples": len(X),
+        **({"source_samples": dict(Counter(row["source"] for row in rows))}
+           if training_source == "combined" else {}),
         "feature_names": feature_names,
         "training_rows": len(X_train),
         "evaluation_rows": len(X_test),
@@ -357,12 +402,17 @@ def train_and_save_model(settings: Settings | None = None) -> dict[str, Any]:
             roc_auc,
         )
     except Exception as exc:
-        if settings.live_api_mode:
+        if schedule_only:
             raise
         logger.warning("Could not persist model bundle to disk (%s). Running with in-memory model.", exc)
     return bundle
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--source", choices=("airlabs", "bts", "combined"))
+    args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    train_and_save_model()
+    settings = Settings()
+    source = args.source or ("combined" if settings.live_api_mode else "airlabs")
+    train_and_save_model(settings, training_source=source)

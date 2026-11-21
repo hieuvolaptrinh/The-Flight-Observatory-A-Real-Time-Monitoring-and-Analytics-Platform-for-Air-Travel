@@ -43,15 +43,14 @@ export function OverviewView({
     .sort((a, b) => (b.rate ?? -1) - (a.rate ?? -1) || b.flights - a.flights);
   return (
     <>
-      <p className="analytics-status">Tự cập nhật số liệu mỗi 8 giây. Độ trễ ưu tiên giờ đến thực tế, rồi giờ đi thực tế,
-        sau đó là ước tính của nguồn. Chuyến chưa biết độ trễ được tách riêng.</p>
+      <p className="analytics-status">Tự cập nhật số liệu mỗi 8 giây. Tỷ lệ trễ dùng giờ khởi hành thực tế từ dữ liệu đã lưu.</p>
       <section className="metrics" aria-label="Chỉ số tổng quan">
         <Metric
           title="Chuyến bay khớp bộ lọc"
           value={number(total)}
           unit="chuyến"
           icon="plane"
-          note={`${selection.length} sân bay nổi bật đang theo dõi`}
+          note="Từ dữ liệu chuyến bay đã lưu"
         />
         <Metric
           title="Tỷ lệ chuyến bay trễ"

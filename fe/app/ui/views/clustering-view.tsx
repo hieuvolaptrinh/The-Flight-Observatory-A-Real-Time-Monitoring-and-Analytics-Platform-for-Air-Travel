@@ -79,11 +79,11 @@ export function ClusteringView({
       )}
       <section className="metrics" aria-label="Chỉ số phân cụm K-Means">
         <Metric
-          title="Thuật toán Phân cụm"
-          value={`K = ${clusteringMeta?.n_clusters ?? 4}`}
-          unit="cụm"
+          title="Chuyến dùng để phân cụm"
+          value={clusteringMeta ? number(clusteringMeta.source_flights_count) : "—"}
+          unit="chuyến"
           icon="cluster"
-          note={clusteringMeta?.run?.algorithm || "KMeans + StandardScaler + PCA(2D)"}
+          note={clusteringMeta ? `K-Means · ${clusteringMeta.n_clusters} cụm` : "Đang chờ kết quả"}
           color="teal"
         />
         <Metric

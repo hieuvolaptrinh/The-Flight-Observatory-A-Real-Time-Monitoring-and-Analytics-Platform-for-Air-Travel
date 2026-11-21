@@ -135,7 +135,7 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
         sort: str | None = Query(default="time", description="Sort by: time, delay, distance"),
         limit: int = Query(default=5, ge=1, le=1000, description="Max records to return"),
         offset: int = Query(default=0, ge=0, description="Pagination offset"),
-        source: Literal["all", "airlabs", "legacy"] = "all",
+        source: Literal["all", "airlabs", "legacy", "combined"] = "all",
         cluster_id: int | None = Query(default=None, ge=0),
         overview: bool = False,
         hourly_days: int = Query(1, ge=1, le=30, description="Days ending on the latest matching flight date for hourly overview"),

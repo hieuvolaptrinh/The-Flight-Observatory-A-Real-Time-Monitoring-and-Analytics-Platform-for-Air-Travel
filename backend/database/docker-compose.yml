@@ -15,6 +15,7 @@ services:
       - analytics_data:/var/lib/postgresql/data
       - ./init-databases.sh:/docker-entrypoint-initdb.d/00-databases.sh:ro
       - ../ingestion/db/schema.sql:/opt/plant-db/processed-schema.sql:ro
+      - ../ingestion/db/model_flights.sql:/opt/plant-db/model-flights.sql:ro
       - ../db/init.sql:/opt/plant-db/processed-legacy.sql:ro
       - ../ingestion/db/raw_schema.sql:/opt/plant-db/raw-schema.sql:ro
     healthcheck:

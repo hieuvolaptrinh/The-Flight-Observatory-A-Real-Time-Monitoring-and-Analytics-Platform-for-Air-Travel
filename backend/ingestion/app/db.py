@@ -377,6 +377,11 @@ class FlightRepository:
         with store.connect() as conn:
             if self.is_postgres:
                 conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            combined = source == "combined" and self.is_postgres and conn.execute(
+                "SELECT to_regclass('flight_data.dashboard_flights') IS NOT NULL AS ready"
+            ).fetchone()["ready"]
+            scope = " FROM flight_data.dashboard_flights AS f " if combined else FLIGHT_SCOPE
+            selection = "SELECT f.*, f.payload AS live_payload " if combined else "SELECT f.*, live.payload AS live_payload "
             if cluster_id is not None:
                 tables_present = self.is_postgres or conn.execute(
                     "SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' "
@@ -385,11 +390,11 @@ class FlightRepository:
                 conditions.append(ROUTE_CLUSTER_FILTER if tables_present else "1 = 0")
                 if tables_present:
                     params.append(cluster_id)
-            filtered = FLIGHT_SCOPE + scope_where
+            filtered = scope + scope_where
             if conditions:
                 filtered += (" AND " if scope_where else " WHERE ") + " AND ".join(conditions)
             total_stored = conn.execute(
-                "SELECT COUNT(*) AS total_stored " + FLIGHT_SCOPE + scope_where
+                "SELECT COUNT(*) AS total_stored " + scope + scope_where
             ).fetchone()["total_stored"]
             stats_row = dict(conn.execute(store.sql(STATS_SELECT + filtered), params).fetchone())
             carrier_limit = "" if include_overview else " LIMIT 8"
@@ -402,7 +407,7 @@ class FlightRepository:
                 GROUP BY f.op_unique_carrier ORDER BY flight_count DESC, code
             """ + carrier_limit), params).fetchall()
             items = [dict(row) for row in conn.execute(store.sql(
-                "SELECT f.*, live.payload AS live_payload " + filtered
+                selection + filtered
                 + f" ORDER BY {FLIGHT_SORTS[sort_key]}, f.flight_key LIMIT ? OFFSET ?"
             ), [*params, limit, offset]).fetchall()]
             airport_keys = sorted({f"airport:{item[side]}" for item in items for side in ("origin", "dest")})
@@ -428,7 +433,7 @@ class FlightRepository:
             last_batch_dict = dict(last_batch) if last_batch else None
             facets = [
                 [row["code"] for row in conn.execute(
-                    f"SELECT DISTINCT f.{column} AS code " + FLIGHT_SCOPE + scope_where + " ORDER BY code"
+                    f"SELECT DISTINCT f.{column} AS code " + scope + scope_where + " ORDER BY code"
                 ).fetchall() if row["code"]]
                 for column in ("origin", "dest", "op_unique_carrier")
             ]

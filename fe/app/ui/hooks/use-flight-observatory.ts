@@ -179,7 +179,7 @@ export function useFlightObservatory(view: ViewMode) {
         offset: String((currentPage - 1) * pageSize),
         sort,
       });
-      if (isOverview || isFlights) params.set("source", "airlabs");
+      if (isOverview || isFlights) params.set("source", "combined");
       if (isOverview) {
         params.set("overview", "true");
         params.set("hourly_days", "7");
@@ -203,10 +203,9 @@ export function useFlightObservatory(view: ViewMode) {
         setApiReady(json.ready);
         setLiveFlights(items);
         setServerMeta(meta);
-        if (isFlights && pageSize >= 300 && currentPage === 1) {
-          setRadarFlights(items);
-        } else if (isFlights) {
+        if (isFlights) {
           const mapParams = new URLSearchParams(params);
+          mapParams.set("source", "airlabs");
           mapParams.set("limit", "300");
           mapParams.set("offset", "0");
           apiRequest<{ output: { items: FlightItem[] } }>(`/ingestion/flights?${mapParams}`)
