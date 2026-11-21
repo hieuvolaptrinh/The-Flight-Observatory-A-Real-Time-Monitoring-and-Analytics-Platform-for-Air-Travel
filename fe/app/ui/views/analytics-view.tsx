@@ -21,6 +21,8 @@ type ComponentResponse = {
   grain: Grain;
   items: { period_start: string; trend?: number; seasonal?: number }[];
   hourly_profile?: { hour: number; flight_count: number }[];
+  observed_periods?: number;
+  minimum_periods?: number;
 };
 type Correlation = {
   variables: string[];
@@ -356,7 +358,11 @@ export function AnalyticsView() {
                     label: number(row.distance_miles) + " dặm · " + number(row.scheduled_elapsed_min) + " phút" }])} />
             </Panel>
             {data.seasonality.hourly_profile?.length ? (
-              <Panel title="Phân bố lưu lượng theo giờ" description="Số chuyến theo giờ địa phương của sân bay đi. Mùa vụ cần thêm dữ liệu qua nhiều chu kỳ.">
+              <Panel title="Phân bố lưu lượng theo giờ" description={
+                data.seasonality.observed_periods === undefined
+                  ? "Số chuyến theo giờ địa phương của sân bay đi. Mùa vụ cần thêm dữ liệu qua nhiều chu kỳ."
+                  : `Số chuyến theo giờ địa phương. Mùa vụ cần hai chu kỳ có dữ liệu. Hiện có ${data.seasonality.observed_periods} ${grains[data.seasonality.grain].toLowerCase()} có chuyến, tối thiểu cần ${data.seasonality.minimum_periods}.`
+              }>
                 <Plot mode="bar" label="Số chuyến quan sát theo giờ khởi hành" xUnit="Giờ địa phương" yUnit="Chuyến"
                   points={data.seasonality.hourly_profile.map(row => ({
                     x: row.hour, y: row.flight_count, label: row.hour + ":00 · " + number(row.flight_count) + " chuyến",

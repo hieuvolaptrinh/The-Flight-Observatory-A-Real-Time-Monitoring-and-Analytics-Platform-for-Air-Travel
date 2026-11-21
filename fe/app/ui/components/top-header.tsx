@@ -1,3 +1,4 @@
+import Image from "next/image";
 import Link from "next/link";
 import { Icon } from "./icons";
 import { IngestionCountdown } from "./ingestion-countdown";
@@ -28,7 +29,7 @@ export function TopHeader({
       <div className="top-brand-group">
         <Link href="/flights" className="brand-logo">
           <span className="brand-mark">
-            <img src="/logo.png" alt="FlightLens Logo" className="brand-logo-img" />
+            <Image src="/logo.png" alt="" width={36} height={36} className="brand-logo-img" />
           </span>
           <strong>
             flightlens<span className="brand-period">+</span>

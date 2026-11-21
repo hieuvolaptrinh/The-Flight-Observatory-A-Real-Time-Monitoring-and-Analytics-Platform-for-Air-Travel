@@ -17,3 +17,4 @@ class Settings(BaseSettings):
     forecast_airports: str = Field(default="JFK", pattern=r"^[A-Z]{3}(, *[A-Z]{3})*$")
     forecast_timezone: ZoneInfo = ZoneInfo("America/New_York")
     forecast_min_observed_days: int = Field(default=5, ge=1, le=28)
+    forecast_snapshot_only: bool = False

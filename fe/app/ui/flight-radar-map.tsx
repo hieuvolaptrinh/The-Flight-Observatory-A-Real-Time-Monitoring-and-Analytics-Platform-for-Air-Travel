@@ -301,6 +301,7 @@ export default function FlightRadarMap({
 
   useEffect(() => {
     let mounted = true;
+    const planeMarkers = planeMarkersRef.current;
 
     async function initMap() {
       if (!mapContainerRef.current || mapInstanceRef.current) return;
@@ -361,7 +362,7 @@ export default function FlightRadarMap({
         mapInstanceRef.current.remove();
         mapInstanceRef.current = null;
       }
-      planeMarkersRef.current.clear();
+      planeMarkers.clear();
     };
   }, []);
 

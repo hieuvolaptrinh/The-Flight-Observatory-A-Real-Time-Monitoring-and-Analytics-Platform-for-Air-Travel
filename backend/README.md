@@ -86,6 +86,10 @@ docker compose -f backend/docker-compose.yml restart prediction
 
 Artifact nằm trong volume `prediction_models`. Khởi động lại để service đọc model mới. Trong lúc thiếu artifact, `/results` báo `ready=false` và `reason=model_missing`.
 
+Lệnh train in MAE và accuracy, đồng thời lưu MAE, RMSE, F1, ROC-AUC và kết quả baseline trong artifact. Baseline dùng trung vị delay và lớp phổ biến nhất của tập train. API Prediction trả các chỉ số của artifact đang chạy, số mẫu train/test và thời điểm đánh giá.
+
+Trong Docker, Prediction tạo bảng `analytics.flight_predictions` khi khởi động. Mỗi lần suy luận thành công ghi một snapshot có phiên bản model, thời điểm chạy và các dự đoán từng chuyến. `GET /results` và `GET /predictions` đọc snapshot mới nhất từ PostgreSQL. Trang Forecast có bộ lọc ngày mai theo múi giờ sân bay khởi hành và hiển thị thời điểm tạo snapshot.
+
 Để đưa model có sẵn vào volume, thay đường dẫn trên máy:
 
 ```powershell
@@ -95,7 +99,7 @@ docker compose restart prediction
 
 Chỉ nạp artifact tin cậy và dùng phiên bản scikit-learn tương thích lúc huấn luyện. `joblib` không phải định dạng an toàn để nạp file không rõ nguồn.
 
-Clustering dùng model có sẵn trong image/volume. Nếu chưa có model, nó có thể huấn luyện từ DB khi đủ sân bay với khoảng cách, thời gian và delay; ít dữ liệu thì trả trạng thái chờ. Scheduler clustering mặc định 24 giờ; có thể dùng nút Chạy K-Means sau khi lấy dữ liệu mới.
+Clustering dùng model có sẵn trong image/volume. Huấn luyện riêng bằng `docker compose run --rm --no-deps clustering python -m app.train` khi có đủ sân bay với khoảng cách, thời gian và delay. Ở chế độ live, `POST /run` cần model đã chuẩn bị sẵn. Scheduler clustering mặc định 24 giờ.
 
 Analytics và Prediction có scheduler riêng mỗi 5 phút. `TRIGGER_DOWNSTREAM_URLS` tùy chọn có thể chứa URL `/run` nội bộ nếu muốn gọi sau ingestion; tránh bật trùng cả webhook và scheduler khi không cần.
 
@@ -111,3 +115,71 @@ python -m pytest ingestion/tests -q
 Test dùng HTTP mock, không tiêu quota hoặc cần key thật. Kiểm thử PostgreSQL tùy chọn bằng `TEST_DATABASE_URL` và `TEST_RAW_DATABASE_URL` trong hai database có tên bắt đầu bằng `test`. Không dùng DB chứa dữ liệu cần giữ.
 
 Tài liệu nguồn: https://airlabs.co/docs/schedules · https://airlabs.co/docs/airports · https://openweathermap.org/api/current
+
+## 7. Nạp lịch sử AirLabs
+
+Từ thư mục `backend`, kiểm tra một mã chuyến đã thấy ở sân bay được cấu hình. Ví dụ dưới đây dùng AA171 và khoảng ngày đã xác nhận có bản ghi. Ngày kết thúc là mốc loại trừ, tính theo giờ khởi hành địa phương.
+
+```powershell
+docker compose run --rm --no-deps ingestion python -m app.historical --airport JFK --flight AA171 --from 2025-11-01 --to 2025-12-01 --probe
+docker compose run --rm --no-deps ingestion python -m app.historical --airport JFK --flight AA171 --from 2025-11-01 --to 2025-12-01 --pages 2
+```
+
+`--probe` lưu một response vào raw và báo khoảng ngày thực tế. Lệnh import chỉ thêm chuyến thuộc sân bay và khoảng ngày yêu cầu, giữ liên kết raw/processed và dùng chung ngân sách AirLabs với scheduler. Có thể dùng `--offset` để khảo sát các trang tiếp theo. Khi `possibly_more=True`, trang cuối có thể còn dữ liệu. Kết quả lịch sử chỉ phủ các mã đã chọn. Theo dõi độ phủ theo ngày và giữ phạm vi mã chuyến ổn định khi phân tích mùa vụ. Dự báo Gemini dùng mẫu lịch bay live đã thu thập trong 28 ngày gần nhất. [AirLabs Historical API](https://airlabs.co/docs/historical)
+
+## 8. Diễn tập demo
+
+Chạy từ thư mục `backend` khi stack dev đang có dữ liệu PostgreSQL và hai model đã chuẩn bị. Hai script dùng project Docker riêng `flight-delay-demo`, với các volume riêng. Tắt lịch và khóa provider giúp diễn tập lặp lại được bằng snapshot đã lưu.
+
+```powershell
+.\scripts\prepare-demo.ps1
+.\scripts\test-demo-recovery.ps1
+```
+
+- Mở giao diện ở `http://localhost:13000`, mở F12 → Network để xem các request Analytics, Clustering và Prediction.
+- Script kiểm tra có kết quả trước khi xóa, xóa kết quả phân tích trong PostgreSQL demo, xác nhận API báo thiếu, gọi `POST /run`, rồi kiểm tra kết quả trở lại trong DB. SHA-256 của hai model phải giữ nguyên trong bước phục hồi.
+- Để trình bày trạng thái thiếu trên web, thực hiện từng bước tương ứng trong DB/Gateway của project demo. Mở `http://localhost:12002` để gọi API qua gateway. Dùng project dev cho lượt minh họa AirLabs cập nhật sau khi bật scheduler có chủ đích.
+- Forecast trong stack demo hiển thị dự báo Gemini đã lưu kèm ngày mục tiêu gốc. Dự đoán trễ trên demo dùng mốc polling đã lưu để nhóm có thể chạy lại cùng tập chuyến sau ngày thu thập. Stack dev sử dụng thời điểm hiện tại.
+
+### Nội dung đưa vào báo cáo
+
+Sơ đồ mạng và kết nối giữa các khối
+
+```mermaid
+flowchart LR
+  Browser["Trình duyệt"] --> Frontend
+  AirLabs --> Ingestion
+  OpenWeather --> Ingestion
+  subgraph Docker["Mạng backend của Docker Compose"]
+    Frontend --> Gateway
+    Gateway --> Ingestion
+    Gateway --> Analytics
+    Gateway --> Clustering
+    Gateway --> Prediction
+    Ingestion --> Raw[("PostgreSQL raw")]
+    Ingestion --> Processed[("PostgreSQL processed")]
+    Analytics --- Processed
+    Clustering --- Processed
+    Prediction --- Processed
+  end
+  Analytics --> Gemini
+```
+
+ERD rút gọn của các bảng có khóa ngoại. Liên kết giữa hai database dùng `raw_response_id` và `raw_row_index` do Ingestion ghi.
+
+```mermaid
+erDiagram
+  RAW_API_RESPONSES ||--o{ RAW_FLIGHTS : contains
+  RAW_API_RESPONSES ||--o| RAW_WEATHER : contains
+  AIRLINES ||--o{ FLIGHTS : operates
+  AIRPORTS ||--o{ AIRPORT_VERSIONS : versions
+  AIRPORT_VERSIONS ||--o{ FLIGHTS : departure
+  AIRPORT_VERSIONS ||--o{ FLIGHTS : arrival
+  FLIGHTS ||--o| FLIGHT_OUTCOMES : records
+  CLUSTERING_RUNS ||--o{ CLUSTER_CENTROIDS : stores
+  CLUSTERING_RUNS ||--o{ CLUSTER_ASSIGNMENTS : stores
+```
+
+- Nêu phạm vi sân bay, số ngày có dữ liệu, chu kỳ từng job và cách giới hạn request. Ghi số chuyến có nhãn quan sát và khoảng thời gian train/test.
+- Trình bày K-Means/PCA, mô hình hồi quy/phân loại delay, baseline và các chỉ số từ artifact. Ghi rõ dự báo mẫu lưu lượng bằng Gemini và cách xác định nhãn cao/thấp.
+- Chụp web, F12 và DB trước/sau bước phục hồi. Đối chiếu đủ line, scatter, histogram, trend, seasonal, correlation, dự đoán và phân loại ngày mai trước khi chốt tài liệu.

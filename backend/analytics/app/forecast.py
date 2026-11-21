@@ -70,6 +70,19 @@ async def forecast(pipeline, *, generate=False):
     basis = "live_schedule_sample_v2"
     minimum_days = settings.forecast_min_observed_days
     async with await pipeline.connect() as db:
+        if settings.forecast_snapshot_only:
+            if generate:
+                raise HTTPException(409, "Chế độ demo chỉ đọc dự báo đã lưu.")
+            cached = await (await db.execute("""
+                SELECT forecast_date, computed_at, model, payload
+                FROM analytics.forecasts
+                ORDER BY forecast_date DESC, computed_at DESC
+                LIMIT 1
+            """)).fetchone()
+            if cached:
+                return {"ready": True, "snapshot_only": True, **cached}
+            return {"ready": False, "snapshot_only": True, "forecast_date": target, "scope": scope,
+                    "observed_days": 0, "required_days": minimum_days}
         if generate:
             await db.execute("SELECT pg_advisory_xact_lock(540417, %s::date - DATE '2000-01-01')", (target,))
         cached = await (await db.execute("""
@@ -84,6 +97,7 @@ async def forecast(pipeline, *, generate=False):
             SELECT f.fl_date AS date, count(*) AS flight_count
             FROM ingested_flights f JOIN live_flight_details d USING (flight_key)
             WHERE f.fl_date >= %s AND f.fl_date < %s AND f.origin = ANY(%s)
+              AND COALESCE(d.payload::jsonb->>'feed', 'schedules') = 'schedules'
             GROUP BY f.fl_date ORDER BY f.fl_date
         """, ((today - timedelta(days=28)).isoformat(), today.isoformat(), airports))
         history = await cursor.fetchall()

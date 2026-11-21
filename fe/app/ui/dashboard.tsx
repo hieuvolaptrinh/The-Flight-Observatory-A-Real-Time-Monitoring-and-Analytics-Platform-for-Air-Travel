@@ -35,7 +35,9 @@ export default function Dashboard({ view }: { view: ViewMode }) {
           ? "Đang chờ chuyến bay có dữ liệu thời tiết phù hợp."
           : predictionReason === "waiting_for_scheduled_departures"
             ? "Đang chờ chuyến AirLabs sắp khởi hành trong 24 giờ tới."
-            : obs.mlPredictions.length
+            : obs.mlPredictions.length && obs.tomorrowOnly
+              ? "Chưa có chuyến phù hợp cho ngày mai theo giờ sân bay trong lần dự báo đã lưu."
+              : obs.mlPredictions.length
               ? "Không có chuyến bay phù hợp với bộ lọc hiện tại."
               : "Dịch vụ Prediction chưa có kết quả dự báo độ trễ.";
 
@@ -119,7 +121,6 @@ export default function Dashboard({ view }: { view: ViewMode }) {
             mapFlights={obs.mapFlights}
             selectedFlightKey={obs.selectedFlightKey}
             setSelectedFlightKey={obs.setSelectedFlightKey}
-            airport={obs.airport}
             setAirport={obs.setAirport}
             autoPollEnabled={obs.autoPollEnabled}
             setAutoPollEnabled={obs.setAutoPollEnabled}
@@ -177,6 +178,10 @@ export default function Dashboard({ view }: { view: ViewMode }) {
             scoped={obs.scoped}
             predictionStatus={predictionStatus}
             scheduleOnly={obs.predictionMeta?.input_profile === "schedule_only"}
+            tomorrowOnly={obs.tomorrowOnly}
+            setTomorrowOnly={obs.setTomorrowOnly}
+            evaluatedAt={typeof obs.predictionMeta?.evaluated_at === "string" ? obs.predictionMeta.evaluated_at : undefined}
+            referenceAt={typeof obs.predictionMeta?.schedule_reference_at === "string" ? obs.predictionMeta.schedule_reference_at : undefined}
             filteredPredictions={obs.filteredPredictions}
             forecastAvg={obs.forecastAvg}
             highCount={obs.highCount}

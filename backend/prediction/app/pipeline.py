@@ -120,7 +120,7 @@ class Pipeline:
                     with conn.cursor() as cur:
                         cur.execute(
                             """
-                            SELECT f.flight_code, f.op_unique_carrier, f.origin, f.dest,
+                            SELECT f.flight_key, f.flight_code, f.op_unique_carrier, f.origin, f.dest,
                                    d.payload AS live_details_json,
                                    f.fl_date, f.crs_dep_time, f.dep_hour, f.day_of_week, f.distance,
                                    f.crs_elapsed_time, f.delay_minutes,
@@ -144,7 +144,7 @@ class Pipeline:
                         cur = conn.cursor()
                         cur.execute(
                             """
-                            SELECT f.flight_code, f.op_unique_carrier, f.origin, f.dest,
+                            SELECT f.flight_key, f.flight_code, f.op_unique_carrier, f.origin, f.dest,
                                    d.payload AS live_details_json,
                                    f.fl_date, f.crs_dep_time, f.dep_hour, f.day_of_week, f.distance,
                                    f.crs_elapsed_time, f.delay_minutes,
@@ -222,20 +222,34 @@ class Pipeline:
 
         with psycopg.connect(self.settings.source_database_url, row_factory=dict_row) as conn:
             return conn.execute("""
+                WITH clock AS (
+                    SELECT COALESCE(
+                        CASE WHEN %s THEN (SELECT to_timestamp(last_started_epoch) FROM provider_poll_state WHERE id = 1) END,
+                        CURRENT_TIMESTAMP
+                    ) AS reference_at
+                )
                 SELECT f.flight_key, f.flight_code, f.op_unique_carrier, f.origin, f.dest, f.fl_date,
-                       f.crs_dep_time, f.day_of_week, f.distance, f.crs_elapsed_time
+                       f.crs_dep_time, f.day_of_week, f.distance, f.crs_elapsed_time,
+                       tz.name AS departure_timezone, target.is_tomorrow, clock.reference_at
                 FROM ingested_flights AS f JOIN live_flight_details AS d USING (flight_key)
+                LEFT JOIN provider_cache AS airport ON airport.cache_key = 'airport:' || f.origin
+                LEFT JOIN pg_timezone_names AS tz ON tz.name = airport.payload::jsonb->>'timezone'
+                CROSS JOIN clock
                 CROSS JOIN LATERAL (
                     SELECT (d.payload::jsonb->>'scheduled_dep_utc')::timestamptz AS scheduled_at
                 ) AS departure
+                CROSS JOIN LATERAL (
+                    SELECT f.fl_date::date = (clock.reference_at AT TIME ZONE tz.name)::date + 1 AS is_tomorrow
+                ) AS target
                 WHERE d.payload::jsonb->>'source' = 'airlabs'
                   AND d.payload::jsonb->>'flight_status' = 'scheduled'
-                  AND departure.scheduled_at >= CURRENT_TIMESTAMP
-                  AND departure.scheduled_at < CURRENT_TIMESTAMP + INTERVAL '24 hours'
+                  AND departure.scheduled_at >= clock.reference_at
+                  AND (departure.scheduled_at < clock.reference_at + INTERVAL '24 hours'
+                       OR target.is_tomorrow)
                   AND f.distance IS NOT NULL AND f.crs_elapsed_time IS NOT NULL
-                ORDER BY departure.scheduled_at, f.flight_key
+                ORDER BY target.is_tomorrow DESC NULLS LAST, departure.scheduled_at, f.flight_key
                 LIMIT 150
-            """).fetchall()
+            """, (self.settings.saved_schedule_clock,)).fetchall()
 
     def _execute_inference_sync(self) -> PipelineOutput:
         if self.settings.live_api_mode and not Path(self.settings.model_path).is_file():
@@ -287,6 +301,10 @@ class Pipeline:
                 low_cnt += 1
 
             item = {
+                "flight_key": c.get("flight_key"),
+                "flight_date": str(c["fl_date"]) if c.get("fl_date") else None,
+                "departure_timezone": c.get("departure_timezone"),
+                "is_tomorrow": c.get("is_tomorrow"),
                 "flight": c.get("flight_code", "FL 000"),
                 "carrier": c.get("op_unique_carrier", "AA"),
                 "origin": c.get("origin", "JFK"),
@@ -313,43 +331,6 @@ class Pipeline:
         avg_delay = round(float(np.mean([item["delay"] for item in items])), 1) if items else 0.0
         avg_prob = round(float(np.mean([item["probability"] for item in items])), 1) if items else 0.0
 
-        # Persist predictions and classification labels to PostgreSQL analytics.flight_predictions
-        try:
-            db_url = self.settings.database_url or self.settings.source_database_url
-            if db_url and db_url.startswith(("postgresql://", "postgres://")):
-                import json
-                import psycopg
-
-                with psycopg.connect(db_url) as conn:
-                    with conn.cursor() as cur:
-                        cur.executemany(
-                            """
-                            INSERT INTO analytics.flight_predictions (
-                                flight_code, carrier, origin, destination,
-                                dep_time, predicted_delay_minutes, delay_probability,
-                                risk_level, weather_json, evaluated_at
-                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP);
-                            """,
-                            [
-                                (
-                                    item["flight"],
-                                    item["carrier"],
-                                    item["origin"],
-                                    item["destination"],
-                                    item["time"],
-                                    item["delay"],
-                                    item["probability"],
-                                    item["risk_level"],
-                                    json.dumps(item.get("weather", {})),
-                                )
-                                for item in items
-                            ],
-                        )
-                    conn.commit()
-                logger.info("Successfully persisted %d classified flight predictions to PostgreSQL analytics.flight_predictions", len(items))
-        except Exception as exc:
-            logger.warning("Could not persist predictions to PostgreSQL: %s", exc)
-
         metadata = {
             "model_version": bundle.get("model_version", "prediction-v1.0"),
             "algorithm_regression": "HistGradientBoostingRegressor",
@@ -358,6 +339,8 @@ class Pipeline:
             "input_profile": "schedule_only" if schedule_only else "schedule_and_weather",
             "trained_at": bundle.get("trained_at"),
             "training_samples": bundle.get("training_samples", 0),
+            "training_rows": bundle.get("training_rows"),
+            "evaluation_rows": bundle.get("evaluation_rows"),
             "model_metrics": bundle.get("metrics", {}),
             "total_predicted": total,
             "avg_predicted_delay": avg_delay,
@@ -370,6 +353,8 @@ class Pipeline:
             "evaluated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "ready": True,
         }
+        if schedule_only and self.settings.saved_schedule_clock:
+            metadata["schedule_reference_at"] = candidates[0]["reference_at"].isoformat()
 
         return PipelineOutput(items=items, metadata=metadata)
 

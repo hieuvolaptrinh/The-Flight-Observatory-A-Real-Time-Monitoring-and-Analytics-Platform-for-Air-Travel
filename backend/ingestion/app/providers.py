@@ -166,7 +166,8 @@ class LiveProviders:
         self.transport = transport
         self.last_status = {"state": "waiting", "warnings": []}
 
-    async def request(self, client, provider, endpoint, params, group, budget, reset_day, credential, *, airport_code=None):
+    async def request(self, client, provider, endpoint, params, group, budget, reset_day, credential, *,
+                      airport_code=None, allow_list=False):
         now = datetime.now(timezone.utc)
         credential_id = hashlib.sha256(credential.encode()).hexdigest()[:16]
         block_key = f"block:{provider}:{group}"
@@ -195,7 +196,9 @@ class LiveProviders:
             if response.status_code >= 400:
                 code = str(response.status_code)
             else:
-                if not isinstance(payload, dict):
+                if isinstance(payload, list) and allow_list:
+                    pass
+                elif not isinstance(payload, dict):
                     code = "invalid_response"
                 elif payload.get("error"):
                     code = str(payload["error"].get("code", "provider_error")) if isinstance(payload["error"], dict) else "provider_error"

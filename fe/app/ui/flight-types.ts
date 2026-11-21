@@ -184,6 +184,10 @@ export interface CarrierStat {
 }
 
 export interface PredictionItem {
+  flight_key?: string | null;
+  flight_date?: string | null;
+  departure_timezone?: string | null;
+  is_tomorrow?: boolean | null;
   flight: string;
   carrier: string;
   origin: string;

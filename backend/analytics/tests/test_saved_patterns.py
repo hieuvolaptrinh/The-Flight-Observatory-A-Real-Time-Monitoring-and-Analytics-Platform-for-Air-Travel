@@ -53,6 +53,24 @@ def publish(client):
     assert response.json()["status"] == "completed"
 
 
+def test_demo_only_reads_latest_saved_forecast(database):
+    with psycopg.connect(database) as conn:
+        conn.execute("DELETE FROM analytics.forecasts")
+        conn.execute("""
+            INSERT INTO analytics.forecasts (forecast_date, model, payload)
+            VALUES ('2025-02-01', 'gemini-test', '{"predicted_flight_count": 17}')
+        """)
+
+    settings = Settings(database_url=database, scheduler_enabled=False, forecast_snapshot_only=True)
+    loop_options = {"loop_factory": asyncio.SelectorEventLoop} if os.name == "nt" else {}
+    with TestClient(create_app(settings), backend_options=loop_options) as client:
+        result = client.get("/forecast").json()
+        assert result["ready"] and result["snapshot_only"]
+        assert result["forecast_date"] == "2025-02-01"
+        assert result["payload"]["predicted_flight_count"] == 17
+        assert client.post("/forecast").status_code == 409
+
+
 def test_api_returns_exact_persisted_patterns(client, database):
     publish(client)
     with psycopg.connect(database, row_factory=dict_row) as db:
@@ -141,7 +159,7 @@ def test_forecast_requires_recent_live_days_and_reuses_exact_scope(database, mon
     database = make_conninfo(database, options="-c search_path=forecast_test,public")
     settings = Settings(
         database_url=database, scheduler_enabled=False,
-        forecast_airports="JFK,LGA", forecast_min_observed_days=5,
+        forecast_airports="JFK,LGA", forecast_min_observed_days=5, forecast_snapshot_only=False,
     )
     today = datetime.now(settings.forecast_timezone).date()
     target = today + timedelta(days=1)
@@ -151,16 +169,20 @@ def test_forecast_requires_recent_live_days_and_reuses_exact_scope(database, mon
         db.execute("DELETE FROM analytics.forecasts")
         db.execute("CREATE SCHEMA IF NOT EXISTS forecast_test")
         db.execute("CREATE TABLE IF NOT EXISTS forecast_test.ingested_flights (flight_key text PRIMARY KEY, fl_date text, origin text)")
-        db.execute("CREATE TABLE IF NOT EXISTS forecast_test.live_flight_details (flight_key text PRIMARY KEY)")
+        db.execute("""CREATE TABLE IF NOT EXISTS forecast_test.live_flight_details (
+            flight_key text PRIMARY KEY, payload text NOT NULL DEFAULT '{}')""")
         db.execute("TRUNCATE forecast_test.live_flight_details, forecast_test.ingested_flights")
         rows = [(str(day), (today - timedelta(days=day)).isoformat(), "JFK") for day in range(1, 6)]
         rows += [("today", today.isoformat(), "LGA"), ("future", target.isoformat(), "JFK"),
-                 ("other", rows[0][1], "LAX"), ("csv", rows[0][1], "JFK")]
+                 ("other", rows[0][1], "LAX"), ("csv", rows[0][1], "JFK"),
+                 ("backfill", (today - timedelta(days=6)).isoformat(), "JFK")]
         with db.cursor() as cursor:
             cursor.executemany("INSERT INTO ingested_flights VALUES (%s,%s,%s)", rows)
             cursor.executemany(
-                "INSERT INTO live_flight_details VALUES (%s)", [(key,) for key, _, _ in rows if key not in {"5", "csv"}],
+                "INSERT INTO live_flight_details (flight_key) VALUES (%s)",
+                [(key,) for key, _, _ in rows if key not in {"5", "csv", "backfill"}],
             )
+            cursor.execute("""INSERT INTO live_flight_details VALUES ('backfill', '{"feed":"historical"}')""")
 
     loop_options = {"loop_factory": asyncio.SelectorEventLoop} if os.name == "nt" else {}
     with TestClient(create_app(settings), backend_options=loop_options) as client:
@@ -178,7 +200,7 @@ def test_forecast_requires_recent_live_days_and_reuses_exact_scope(database, mon
         assert client.get("/forecast").json()["ready"] is False
         estimate.reset_mock()
         with psycopg.connect(database) as db:
-            db.execute("INSERT INTO live_flight_details VALUES ('5')")
+            db.execute("INSERT INTO live_flight_details (flight_key) VALUES ('5')")
         assert client.post("/forecast").json()["payload"]["classification"] == "high"
         assert client.get("/classification").json()["classification"] == "high"
         assert client.post("/forecast").status_code == 200

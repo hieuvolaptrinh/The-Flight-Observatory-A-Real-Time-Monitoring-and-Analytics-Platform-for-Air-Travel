@@ -73,8 +73,11 @@ class Pipeline:
         if self.settings.live_api_mode:
             rows = load_flight_rows(self.settings)
             airports, _ = aggregate_features(rows)
-            if not airports or (len(airports) < self.settings.n_clusters and not Path(self.settings.model_path).is_file()):
+            has_model = Path(self.settings.model_path).is_file()
+            if not airports or (len(airports) < self.settings.n_clusters and not has_model):
                 return PipelineOutput(items=[], metadata={"ready": False, "reason": "insufficient_airports", "available_airports": len(airports), "required_airports": self.settings.n_clusters})
+            if not has_model:
+                return PipelineOutput(items=[], metadata={"ready": False, "reason": "model_missing"})
         bundle = self._load_or_build_bundle()
         scaler = bundle["scaler"]
         kmeans = bundle["kmeans"]

@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import Settings
 from app.jobs import JobAlreadyRunning, JobRunner
 from app.pipeline import Pipeline
+from app.repository import PredictionRepository
 from app.schemas import Job, Results
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -20,24 +21,21 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         active_pipeline = pipeline if pipeline is not None else Pipeline(settings=settings)
-        runner = JobRunner(settings.service_name, active_pipeline)
+        database_url = settings.database_url
+        repository = PredictionRepository(database_url) if database_url.startswith(("postgresql://", "postgres://")) else None
+        if repository is not None:
+            await asyncio.to_thread(repository.migrate)
+        runner = JobRunner(settings.service_name, active_pipeline, repository)
         app.state.runner = runner
 
-        # Optionally run an initial inference job on startup
-        if settings.run_on_startup:
-            asyncio.create_task(runner.run_once(trigger="startup"))
-
-        task = (
-            asyncio.create_task(runner.schedule(settings.job_interval_seconds, run_on_startup=False))
-            if settings.scheduler_enabled else None
-        )
+        task = asyncio.create_task(runner.schedule(settings.job_interval_seconds, settings.run_on_startup,
+                                                   repeat=settings.scheduler_enabled))
         try:
             yield
         finally:
-            if task is not None:
-                task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await task
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
 
     app = FastAPI(
         title="Flight Delay Prediction & Classification Service",
@@ -60,13 +58,13 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
             "status": "ok", "service": settings.service_name,
             "scheduler_enabled": settings.scheduler_enabled,
             "job_interval_seconds": settings.job_interval_seconds,
-            "storage": "memory",
+            "storage": app.state.runner.storage,
         }
 
     @app.get("/results", response_model=Results, tags=["results"])
     @app.get("/predictions", response_model=Results, tags=["results"])
     async def results():
-        return app.state.runner.results
+        return await app.state.runner.get_results()
 
     @app.get("/jobs/latest", response_model=Job | None, tags=["operations"])
     async def latest_job():
