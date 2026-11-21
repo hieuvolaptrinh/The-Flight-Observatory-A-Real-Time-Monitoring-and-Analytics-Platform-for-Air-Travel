@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AirportStat,
-  CarrierStat,
   ClusterAssignment,
   ClusterCentroid,
   ClusteringMeta,
@@ -31,14 +30,13 @@ export function useFlightObservatory(view: ViewMode) {
   const [airport, setAirport] = useState("all");
   const [destAirport, setDestAirport] = useState("all");
   const [carrier, setCarrier] = useState("all");
-  const [rankBy, setRankBy] = useState<"airports" | "carriers">("airports");
   const [risk, setRisk] = useState("all");
   const [flightStatus, setFlightStatus] = useState("all");
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [sort, setSort] = useState("time");
   const [pageState, setPageState] = useState({ key: "", page: 1 });
-  const [pageSize, setPageSize] = useState(25);
+  const pageSize = isFlights ? 10 : 25;
   const [updated, setUpdated] = useState<string | null>(null);
   const [toast, setToast] = useState("");
   const [busy, setBusy] = useState(false);
@@ -294,12 +292,7 @@ export function useFlightObservatory(view: ViewMode) {
     delay: row.avg_delay ?? 0,
     rate: row.known_count ? row.delayed_count * 100 / row.known_count : null,
   }));
-  const carriers: CarrierStat[] = (serverMeta?.carrier_stats ?? []).map(row => ({
-    code: row.code,
-    name: row.name || row.code,
-    flights: row.flight_count,
-    rate: row.known_count ? row.delayed_count * 100 / row.known_count : null,
-  }));
+
 
   const predictions = useMemo<PredictionItem[]>(() => {
     // Prefer real ML predictions from Prediction Service (STT 12 & STT 13)
@@ -464,14 +457,14 @@ export function useFlightObservatory(view: ViewMode) {
           : "Tổng quan Không lưu Hoa Kỳ";
 
   const pageSubtitle = isFlights
-    ? "Theo dõi vị trí trực quan trên bản đồ radar và thông tin chi tiết từng hành trình bay."
+    ? "Xem đường bay mô phỏng và tra cứu các chuyến bay đã lưu."
     : isClustering
-      ? "Phân nhóm và đánh giá đặc trưng vận hành của các sân bay và đường bay trọng điểm."
+      ? "Khám phá các cụm tuyến bay K-Means trên biểu đồ PCA."
       : isForecast
-        ? "Nhận diện sớm các chuyến bay có xác suất trễ cao bằng Machine Learning để chủ động điều phối."
+        ? "Xem xác suất trễ của các chuyến bay sắp khởi hành."
         : isAnalytics
-          ? "Biểu đồ chuỗi thời gian Ngày/Tuần/Tháng, phân bố thời lượng bay, xu hướng, mùa vụ và tương quan Pearson."
-          : "Tổng hợp trực tiếp lưu lượng, tỷ lệ chậm chuyến và điểm nóng sân bay từ PostgreSQL.";
+          ? "Xem xu hướng lưu lượng, tính mùa vụ và tương quan giữa các chỉ số."
+          : "Xem số chuyến, tỷ lệ trễ theo giờ và lượt thu thập gần nhất.";
 
   return {
     isOverview,
@@ -489,8 +482,6 @@ export function useFlightObservatory(view: ViewMode) {
     setDestAirport,
     carrier,
     setCarrier,
-    rankBy,
-    setRankBy,
     risk,
     setRisk,
     flightStatus,
@@ -501,8 +492,6 @@ export function useFlightObservatory(view: ViewMode) {
     setSort,
     currentPage,
     setCurrentPage,
-    pageSize,
-    setPageSize,
     updated,
     toast,
     busy,
@@ -539,7 +528,6 @@ export function useFlightObservatory(view: ViewMode) {
     setTomorrowOnly,
 
     // Derived datasets
-    carriers,
     selection,
     total,
     rate,

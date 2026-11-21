@@ -1,5 +1,7 @@
 "use client";
 
+import Image from "next/image";
+import Link from "next/link";
 import { flightDateRange, ViewMode } from "./flight-types";
 import { useFlightObservatory } from "./hooks/use-flight-observatory";
 import { Icon } from "./components/icons";
@@ -43,7 +45,7 @@ export default function Dashboard({ view }: { view: ViewMode }) {
               : "Dịch vụ Prediction chưa có kết quả dự báo độ trễ.";
 
   return (
-    <div className="app-shell">
+    <div className="app-shell" data-view={view}>
       <TopHeader
         pageTitle={obs.pageTitle}
         pageSubtitle={obs.pageSubtitle}
@@ -56,6 +58,32 @@ export default function Dashboard({ view }: { view: ViewMode }) {
       />
 
       <main className="main-workspace">
+        {obs.isOverview && (
+          <div className="overview-banner">
+            <div className="overview-banner-art" aria-hidden="true">
+              <div className="overview-banner-photo">
+                <Image src="/bg.png" alt="" fill loading="eager" sizes="(max-width: 600px) 72vw, 40vw" />
+              </div>
+              <div className="overview-banner-map">
+                {/* State boundaries derived from Natural Earth 1:50m Admin 1 data. */}
+                <Image src="/us-map.png" alt="" width={960} height={560} unoptimized />
+                <div className="overview-banner-route">
+                  <span className="overview-banner-sticker"><Icon name="plane" size={21} /></span>
+                </div>
+              </div>
+              <span className="overview-banner-flag">
+                <Image src="/us-flag.png" alt="" width={190} height={100} unoptimized />
+              </span>
+            </div>
+            <div className="overview-banner-copy">
+              <h2>Theo dõi lưu lượng và độ trễ chuyến bay</h2>
+              <Link className="overview-banner-link" href="/flights">
+                <Icon name="plane" size={16} />
+                Mở bản đồ radar
+              </Link>
+            </div>
+          </div>
+        )}
         {visibleErrors.map(([service, error]) => <p className="api-error" role="alert" key={service}>{error}</p>)}
         <div className="dashboard-context">
           <div className="dashboard-source-bar">
@@ -139,8 +167,6 @@ export default function Dashboard({ view }: { view: ViewMode }) {
             carrierDelayBars={obs.carrierDelayBars}
             sort={obs.sort}
             setSort={obs.setSort}
-            pageSize={obs.pageSize}
-            setPageSize={obs.setPageSize}
             paginatedFlights={obs.paginatedFlights}
             startIndex={obs.startIndex}
             safePage={obs.safePage}
@@ -210,10 +236,6 @@ export default function Dashboard({ view }: { view: ViewMode }) {
             hourly={obs.serverMeta?.hourly ?? []}
             onTime={obs.statusCounts.on_time}
             unknown={obs.statusCounts.unknown}
-            selection={obs.selection}
-            carriers={obs.carriers}
-            rankBy={obs.rankBy}
-            setRankBy={obs.setRankBy}
           />
         )}
       </main>

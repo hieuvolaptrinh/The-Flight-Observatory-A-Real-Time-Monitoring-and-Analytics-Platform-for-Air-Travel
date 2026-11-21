@@ -128,6 +128,56 @@ class RawStore:
         return {"source": "airlabs", "database": self.database_name, "total": total, "data": data,
                 "window_start": offset, "window_end": offset + len(data), "window_size": limit}
 
+    def schedule_poll_rows(self, start, end):
+        timestamp = "CAST(r.fetched_at AS timestamptz)" if self.pg else "julianday(r.fetched_at)"
+        bound = "CAST(? AS timestamptz)" if self.pg else "julianday(?)"
+        with self.connect() as conn:
+            rows = conn.execute(self.sql(f"""
+                SELECT f.raw_id, f.airline_iata, f.flight_number, f.dep_iata, f.arr_iata,
+                       f.dep_time, f.arr_time, f.processing_status
+                FROM raw_flights f JOIN raw_api_responses r USING (response_id)
+                WHERE r.provider='airlabs' AND r.endpoint LIKE ?
+                  AND {timestamp} BETWEEN {bound} AND {bound}
+                ORDER BY {timestamp}, f.response_id, f.row_index
+            """), ("%/schedules", start, end)).fetchall()
+        return [dict(row) for row in rows]
+
+    def flight_batches(self, limit):
+        with self.connect() as conn:
+            rows = conn.execute(self.sql("""
+                SELECT r.response_id, r.fetched_at,
+                       MIN(f.dep_iata) AS airport, COUNT(*) AS received,
+                       SUM(CASE WHEN f.processing_status='processed' THEN 1 ELSE 0 END) AS processed,
+                       SUM(CASE WHEN f.processing_status='duplicate' THEN 1 ELSE 0 END) AS duplicates,
+                       SUM(CASE WHEN f.processing_status='rejected' THEN 1 ELSE 0 END) AS rejected
+                FROM raw_api_responses r JOIN raw_flights f USING (response_id)
+                WHERE r.endpoint LIKE ?
+                GROUP BY r.response_id, r.fetched_at
+                ORDER BY r.fetched_at DESC, r.response_id DESC LIMIT ?
+            """), ("%/schedules", limit)).fetchall()
+        return [dict(row) for row in rows]
+
+    def flight_batch_rows(self, response_id, offset, limit):
+        with self.connect() as conn:
+            total = conn.execute(self.sql("""
+                SELECT COUNT(*) AS n FROM raw_flights WHERE response_id=?
+            """), (response_id,)).fetchone()["n"]
+            rows = conn.execute(self.sql("""
+                SELECT raw_id, airline_iata, flight_number, dep_iata, arr_iata, dep_time,
+                       raw_json, processing_status, processed_flight_key
+                FROM raw_flights WHERE response_id=?
+                ORDER BY CASE processing_status WHEN 'processed' THEN 0 WHEN 'duplicate' THEN 1 ELSE 2 END,
+                         row_index LIMIT ? OFFSET ?
+            """), (response_id, limit, offset)).fetchall()
+        items = []
+        for row in rows:
+            item = dict(row)
+            raw = json.loads(item.pop("raw_json"))
+            actual = raw.get("dep_actual") if isinstance(raw, dict) else None
+            item["actual_departure"] = actual if isinstance(actual, str) else None
+            items.append(item)
+        return {"total": total, "items": items}
+
     def flight(self, raw_id):
         with self.connect() as conn:
             row = conn.execute(self.sql("""SELECT f.*,r.fetched_at,r.archive_kind FROM raw_flights f

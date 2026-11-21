@@ -1,5 +1,6 @@
 import asyncio
 from contextlib import asynccontextmanager, suppress
+import json
 import logging
 from typing import Literal
 
@@ -81,6 +82,61 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
     async def raw_flights(cursor: int = Query(0, ge=0), window_size: int = Query(12, ge=1, le=100)):
         return await asyncio.to_thread(app.state.runner.pipeline.raw_store.flights, cursor, window_size)
 
+    @app.get("/raw/batches", tags=["results"])
+    async def raw_flight_batches(limit: int = Query(20, ge=1, le=50)):
+        rows = await asyncio.to_thread(app.state.runner.pipeline.raw_store.flight_batches, limit)
+        return {"items": rows}
+
+    @app.get("/poll/latest", tags=["results"])
+    async def latest_schedule_poll():
+        active = app.state.runner.pipeline
+
+        def read():
+            store = LiveStore(active.repository)
+            with store.connect() as conn:
+                if active.repository.is_postgres:
+                    conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+                batch = conn.execute("""
+                    SELECT batch_id, fetched_at, created_at, inserted_count, updated_count FROM ingestion_batches
+                    WHERE source='airlabs' ORDER BY created_at DESC, batch_id DESC LIMIT 1
+                """).fetchone()
+                if batch is None:
+                    return {"batch": None, "raw": [], "processed": []}
+                rows = conn.execute(store.sql("""
+                    SELECT flight_key, flight_code, origin, dest, fl_date, crs_dep_time,
+                           crs_arr_time, distance, delay_minutes, delay_status
+                    FROM ingested_flights WHERE fetched_at=? AND raw_response_id IS NOT NULL
+                    ORDER BY origin, crs_dep_time, flight_key
+                """), (batch["fetched_at"],)).fetchall()
+            return {"batch": dict(batch),
+                    "raw": active.raw_store.schedule_poll_rows(batch["fetched_at"], batch["created_at"]),
+                    "processed": [dict(row) for row in rows]}
+
+        return await asyncio.to_thread(read)
+
+    @app.get("/raw/batches/{response_id}", tags=["results"])
+    async def raw_flight_batch(response_id: str, offset: int = Query(0, ge=0),
+                               limit: int = Query(5, ge=1, le=100)):
+        active = app.state.runner.pipeline
+
+        def read():
+            result = active.raw_store.flight_batch_rows(response_id, offset, limit)
+            keys = sorted({item["processed_flight_key"] for item in result["items"] if item["processed_flight_key"]})
+            present = set()
+            if keys:
+                store = LiveStore(active.repository)
+                placeholders = ", ".join("?" for _ in keys)
+                with store.connect() as conn:
+                    rows = conn.execute(store.sql(
+                        f"SELECT flight_key FROM ingested_flights WHERE flight_key IN ({placeholders})"
+                    ), keys).fetchall()
+                present = {row["flight_key"] for row in rows}
+            for item in result["items"]:
+                item["has_processed"] = item["processed_flight_key"] in present
+            return result
+
+        return await asyncio.to_thread(read)
+
     @app.get("/raw/{raw_id}/comparison", tags=["results"])
     async def compare_flight(raw_id: int):
         active = app.state.runner.pipeline
@@ -90,9 +146,16 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
                 raise HTTPException(404, "Raw flight not found")
             store = LiveStore(active.repository)
             with store.connect() as conn:
-                found = conn.execute(store.sql("SELECT * FROM ingested_flights WHERE flight_key=?"),
+                found = conn.execute(store.sql("""
+                    SELECT f.*, d.payload AS comparison_payload
+                    FROM ingested_flights f LEFT JOIN live_flight_details d USING (flight_key)
+                    WHERE f.flight_key=?
+                """),
                     (raw["processed_flight_key"],)).fetchone()
             processed = dict(found) if found else None
+            payload = processed.pop("comparison_payload") if processed is not None else None
+            details = json.loads(payload) if payload else {}
+            actual_delay = details.get("dep_delay_min") if details.get("flight_status") == "landed" else None
             original = raw["raw"] if isinstance(raw["raw"], dict) else {}
             fields = (("Hãng bay", "airline_iata", "op_unique_carrier"),
                 ("Số hiệu", "flight_number", "op_carrier_fl_num"),
@@ -104,7 +167,9 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
                 "matches_current_source": bool(processed and processed.get("raw_response_id") == raw["response_id"]
                     and processed.get("raw_row_index") == raw["row_index"]),
                 "fields": [{"label": label, "raw": original.get(source),
-                    "processed": processed.get(target) if processed else None} for label, source, target in fields]}
+                    "processed": processed.get(target) if processed else None} for label, source, target in fields]
+                + [{"label": "Chậm khởi hành thực tế (phút)", "raw": None, "processed": actual_delay}],
+                "departure_delay_minutes": actual_delay}
         return await asyncio.to_thread(read)
 
     @app.get("/weather", tags=["results"])

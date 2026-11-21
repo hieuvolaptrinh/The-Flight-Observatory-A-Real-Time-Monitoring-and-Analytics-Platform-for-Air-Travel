@@ -1,9 +1,9 @@
 "use client";
 
-import Link from "next/link";
-import { AirportStat, CarrierStat, HourlyFlightStat, flightDateRange, number } from "../flight-types";
+import { HourlyFlightStat, flightDateRange, number } from "../flight-types";
 import { Icon } from "../components/icons";
 import { Metric } from "../components/metric-card";
+import { IngestionOverview } from "../components/ingestion-overview";
 import { TrendChart } from "../components/trend-chart";
 
 interface OverviewViewProps {
@@ -16,10 +16,7 @@ interface OverviewViewProps {
   hourly: HourlyFlightStat[];
   onTime: number;
   unknown: number;
-  selection: AirportStat[];
-  carriers: CarrierStat[];
-  rankBy: "airports" | "carriers";
-  setRankBy: (val: "airports" | "carriers") => void;
+
 }
 
 export function OverviewView({
@@ -32,18 +29,11 @@ export function OverviewView({
   hourly,
   onTime,
   unknown,
-  selection,
-  carriers,
-  rankBy,
-  setRankBy,
 }: OverviewViewProps) {
   const known = total - unknown;
   const onTimePct = known > 0 ? onTime * 100 / known : 0;
-  const ranked = [...(rankBy === "airports" ? selection : carriers)]
-    .sort((a, b) => (b.rate ?? -1) - (a.rate ?? -1) || b.flights - a.flights);
   return (
     <>
-      <p className="analytics-status">Tự cập nhật số liệu mỗi 8 giây. Tỷ lệ trễ dùng giờ khởi hành thực tế từ dữ liệu đã lưu.</p>
       <section className="metrics" aria-label="Chỉ số tổng quan">
         <Metric
           title="Chuyến bay khớp bộ lọc"
@@ -98,12 +88,14 @@ export function OverviewView({
           </div>
           <div
             className="donut"
-            style={{
-              background: known ? `conic-gradient(#059669 0 ${onTimePct}%, #d97706 ${onTimePct}% 100%)` : "#e5e7eb",
-            }}
             role="img"
             aria-label={known ? `${onTimePct.toFixed(1)}% đúng giờ, ${rate.toFixed(1)}% trễ` : "Chưa biết độ trễ"}
           >
+            <svg viewBox="0 0 160 160" aria-hidden="true" className="donut-ring">
+              <circle cx="80" cy="80" r="72.5" className={known ? "donut-track" : "donut-track is-empty"} />
+              {onTimePct > 0 && <circle cx="80" cy="80" r="72.5" pathLength="100"
+                strokeDasharray={`${onTimePct} 100`} className="donut-on-time" />}
+            </svg>
             <div>
               <span>Đúng giờ</span>
               <strong>
@@ -123,7 +115,7 @@ export function OverviewView({
               <strong>{number(onTime)}</strong>
             </div>
             <div>
-              <i className="orange-bg" />
+              <i className="donut-delay-key" />
               <span>Trễ chuyến (≥ 15 phút)</span>
               <strong>{number(delayed)}</strong>
             </div>
@@ -135,73 +127,7 @@ export function OverviewView({
         </section>
       </div>
 
-      <div className="bottom-grid">
-        <section className="panel ranking-panel">
-          <div className="panel-heading">
-            <div>
-              <h2>Điểm nóng chậm chuyến</h2>
-              <p>Xếp hạng theo tỷ lệ trễ từ dữ liệu thực</p>
-            </div>
-            <div className="segmented">
-              <button
-                type="button"
-                className={rankBy === "airports" ? "selected" : ""}
-                onClick={() => setRankBy("airports")}
-              >
-                Sân bay
-              </button>
-              <button
-                type="button"
-                className={rankBy === "carriers" ? "selected" : ""}
-                onClick={() => setRankBy("carriers")}
-              >
-                Hãng bay
-              </button>
-            </div>
-          </div>
-          <div className="ranking-list">
-            {ranked.length === 0 && <p>Chưa có dữ liệu theo bộ lọc.</p>}
-            {ranked.slice(0, 6)
-              .map((a, i) => (
-                <div className="ranking-row" key={a.code}>
-                  <span className="rank-number">{String(i + 1).padStart(2, "0")}</span>
-                  <div className="airport-code">{a.code}</div>
-                  <div className="ranking-name">
-                    <strong>{a.name}</strong>
-                    <span>{a.flights} chuyến bay</span>
-                  </div>
-                  <div className="ranking-track">
-                    <div style={{ width: `${a.rate ?? 0}%` }} />
-                  </div>
-                  <strong className="rank-rate">
-                    {a.rate === null ? "—" : a.rate.toFixed(1)}
-                    {a.rate !== null && <small>%</small>}
-                  </strong>
-                </div>
-              ))}
-          </div>
-        </section>
-
-        <section className="tomorrow-card">
-          <h2>Khám phá Bản đồ Radar &amp; Phân tích Chuyến bay</h2>
-          <p>
-            Xem lịch bay và vị trí mô phỏng trên bản đồ, cùng kết quả phân cụm tuyến bay.
-          </p>
-          <div className="flight-illustration" aria-hidden="true">
-            <span className="flight-code">RADAR</span>
-            <span className="flight-dashes" />
-            <span className="flight-plane">
-              <Icon name="plane" size={26} />
-            </span>
-            <span className="flight-dashes" />
-            <span className="flight-code">K-MEANS</span>
-          </div>
-          <Link href="/flights" className="forecast-link">
-            Mở Không gian Radar &amp; Chuyến bay
-            <Icon name="arrow" size={18} />
-          </Link>
-        </section>
-      </div>
+      <IngestionOverview />
     </>
   );
 }

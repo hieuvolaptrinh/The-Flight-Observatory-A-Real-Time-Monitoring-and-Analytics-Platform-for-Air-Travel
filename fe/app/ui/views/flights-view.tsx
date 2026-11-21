@@ -57,8 +57,6 @@ interface FlightsViewProps {
   carrierDelayBars: { code: string; avg_delay: number; flight_count: number }[];
   sort: string;
   setSort: (val: string) => void;
-  pageSize: number;
-  setPageSize: (val: number) => void;
   paginatedFlights: FlightItem[];
   startIndex: number;
   safePage: number;
@@ -80,13 +78,6 @@ const SORT_OPTIONS = [
   { value: "time", label: "Sắp xếp: Giờ khởi hành" },
   { value: "delay", label: "Sắp xếp: Độ trễ giảm dần" },
   { value: "distance", label: "Sắp xếp: Cự ly giảm dần" },
-];
-
-const PAGE_SIZE_OPTIONS = [
-  { value: "10", label: "10 dòng / trang" },
-  { value: "12", label: "12 dòng / trang" },
-  { value: "25", label: "25 dòng / trang" },
-  { value: "50", label: "50 dòng / trang" },
 ];
 
 export function FlightsView({
@@ -119,8 +110,6 @@ export function FlightsView({
   carrierDelayBars,
   sort,
   setSort,
-  pageSize,
-  setPageSize,
   paginatedFlights,
   startIndex,
   safePage,
@@ -379,22 +368,13 @@ export function FlightsView({
             </div>
 
             {dataLayer === "cleaned" && (
-              <>
-                <CustomSelect
-                  ariaLabel="Sắp xếp"
-                  size="compact"
-                  value={sort}
-                  onChange={setSort}
-                  options={SORT_OPTIONS}
-                />
-                <CustomSelect
-                  ariaLabel="Số dòng mỗi trang"
-                  size="compact"
-                  value={String(pageSize)}
-                  onChange={val => setPageSize(Number(val))}
-                  options={PAGE_SIZE_OPTIONS}
-                />
-              </>
+              <CustomSelect
+                ariaLabel="Sắp xếp"
+                size="compact"
+                value={sort}
+                onChange={setSort}
+                options={SORT_OPTIONS}
+              />
             )}
           </div>
         </div>
