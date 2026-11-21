@@ -50,19 +50,12 @@ export function PcaScatterChart({
     <div className="pca-scatter-wrap">
       <svg
         viewBox={`0 0 ${W} ${H}`}
-        role="img"
-        aria-label="Không gian phân cụm PCA 2 chiều (PCA X, PCA Y)"
+        role="group"
+        aria-label="Không gian phân cụm PCA 2 chiều"
       >
         <rect x="0" y="0" width={W} height={H} rx="8" fill="#ffffff" />
         <line x1={padX} x2={W - padX} y1={zeroY} y2={zeroY} stroke="#cbd5e1" strokeDasharray="3 3" />
         <line x1={zeroX} x2={zeroX} y1={padY} y2={H - padY} stroke="#cbd5e1" strokeDasharray="3 3" />
-        <text x={W - padX} y={zeroY - 5} textAnchor="end" fill="#64748b" fontSize="8.5">
-          PCA 1 (Lưu lượng &amp; Kết nối)
-        </text>
-        <text x={zeroX + 6} y={padY + 8} textAnchor="start" fill="#64748b" fontSize="8.5">
-          PCA 2 (Độ trễ &amp; Cự ly)
-        </text>
-
         {items.map(item => {
           const isDimmed =
             selectedClusterId !== null && item.cluster_id !== selectedClusterId;
@@ -75,9 +68,20 @@ export function PcaScatterChart({
             <g
               key={`${item.entity_type}-${item.entity_code}`}
               style={{ cursor: "pointer", opacity: isDimmed ? 0.2 : 0.95 }}
+              tabIndex={0}
+              aria-label={item.entity_code}
+              onFocus={() => setHovered(item)}
+              onBlur={() => setHovered(null)}
+              onKeyDown={event => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  setHovered(item);
+                  onSelectEntity?.(item.entity_code);
+                }
+              }}
               onMouseEnter={() => setHovered(item)}
               onMouseLeave={() => setHovered(null)}
-              onClick={() => onSelectEntity?.(item.entity_code)}
+              onClick={() => { setHovered(item); onSelectEntity?.(item.entity_code); }}
             >
               <circle
                 cx={cx}
@@ -87,24 +91,13 @@ export function PcaScatterChart({
                 stroke={isSelected ? "#111827" : "#ffffff"}
                 strokeWidth={isSelected ? 2 : 1}
               />
-              {(isSelected || item.flight_count >= 18) && !isDimmed && (
-                <text
-                  x={cx + 6}
-                  y={cy + 3}
-                  fill="#1e293b"
-                  fontSize="8.5"
-                  fontWeight="700"
-                >
-                  {item.entity_code}
-                </text>
-              )}
             </g>
           );
         })}
       </svg>
 
-      {hovered && (
-        <div className="pca-hover-pill">
+      {hovered && items.includes(hovered) && (
+        <div className="pca-hover-pill" role="status">
           <span
             className="pca-hover-dot"
             style={{ background: CLUSTER_COLORS[hovered.cluster_id] || "#38bdf8" }}

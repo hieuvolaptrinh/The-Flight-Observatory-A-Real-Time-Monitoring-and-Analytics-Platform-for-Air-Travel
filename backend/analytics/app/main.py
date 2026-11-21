@@ -95,6 +95,21 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
                 FROM flight_data.flights
             """)).fetchone()
 
+    @app.get("/dataset", tags=["results"])
+    async def dataset():
+        async with await active.connect() as db:
+            rows = await db.execute("""
+                SELECT source, count(*) AS flights, min(flight_date) AS first_date,
+                       max(flight_date) AS last_date,
+                       count(*) FILTER (
+                           WHERE delay_minutes IS NOT NULL AND scheduled_at IS NOT NULL
+                             AND distance > 0 AND crs_elapsed_time > 0
+                       ) AS training_samples
+                FROM flight_data.model_flights
+                GROUP BY source ORDER BY source
+            """)
+            return {"sources": await rows.fetchall()}
+
     @app.get("/results", response_model=Results, tags=["results"])
     @app.get("/summary", response_model=Results, tags=["results"])
     async def results(window: Annotated[DateWindow, Query()]):

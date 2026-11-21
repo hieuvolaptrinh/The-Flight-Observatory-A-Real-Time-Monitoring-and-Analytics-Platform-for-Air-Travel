@@ -4,6 +4,7 @@ import { flightDateRange, ViewMode } from "./flight-types";
 import { useFlightObservatory } from "./hooks/use-flight-observatory";
 import { Icon } from "./components/icons";
 import { TopHeader } from "./components/top-header";
+import { DatasetCards } from "./components/dataset-cards";
 import { FilterBar } from "./components/filter-bar";
 import { BottomNavDock } from "./components/bottom-nav-dock";
 import { FlightsView } from "./views/flights-view";
@@ -34,7 +35,7 @@ export default function Dashboard({ view }: { view: ViewMode }) {
         : predictionReason === "waiting_for_live_flights_and_weather"
           ? "Đang chờ chuyến bay có dữ liệu thời tiết phù hợp."
           : predictionReason === "waiting_for_scheduled_departures"
-            ? "Đang chờ chuyến AirLabs sắp khởi hành trong 24 giờ tới."
+            ? "Chưa có chuyến AirLabs sắp khởi hành để dự báo. Cập nhật lịch AirLabs rồi chạy lại dự báo."
             : obs.mlPredictions.length && obs.tomorrowOnly
               ? "Chưa có chuyến phù hợp cho ngày mai theo giờ sân bay trong lần dự báo đã lưu."
               : obs.mlPredictions.length
@@ -104,6 +105,8 @@ export default function Dashboard({ view }: { view: ViewMode }) {
             />
           )}
         </div>
+
+        {obs.isForecast && <DatasetCards /> }
 
         {obs.isFlights && (
           <FlightsView

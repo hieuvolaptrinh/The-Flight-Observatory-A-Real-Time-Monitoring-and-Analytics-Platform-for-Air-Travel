@@ -146,6 +146,14 @@ def load_flight_rows(settings: Settings) -> list[dict[str, Any]]:
             import psycopg
             from psycopg.rows import dict_row
             with psycopg.connect(src_url, row_factory=dict_row) as conn:
+                if settings.live_api_mode:
+                    return conn.execute("""
+                        SELECT origin, dest, dep_hour, crs_elapsed_time, distance, delay_minutes
+                        FROM flight_data.model_flights
+                        WHERE distance > 0 AND crs_elapsed_time > 0
+                        ORDER BY flight_date DESC, scheduled_dep_local DESC, source, source_id
+                        LIMIT %s
+                    """, (settings.max_sample_rows,)).fetchall()
                 with conn.cursor() as cur:
                     cur.execute(
                         "SELECT origin, dest, dep_hour, crs_elapsed_time, distance, delay_minutes "
@@ -166,6 +174,8 @@ def load_flight_rows(settings: Settings) -> list[dict[str, Any]]:
                     )
                     rows = [dict(r) for r in cur.fetchall()]
     except Exception as exc:
+        if settings.live_api_mode and src_url.startswith(("postgresql://", "postgres://")):
+            raise
         logger.debug("Could not read rows from source DB (%s): %s", src_url, exc)
 
     if settings.live_api_mode:
@@ -237,31 +247,34 @@ def aggregate_features(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]]
         dep_hour = int(r.get("dep_hour") or 0)
         dist = float(r.get("distance") or 0.0)
         elapsed = float(r.get("crs_elapsed_time") or 0.0)
+        observed = r.get("delay_minutes") is not None
         delay = float(r.get("delay_minutes") or 0.0)
         is_peak = 1 if 15 <= dep_hour <= 21 else 0
         is_delayed = 1 if delay >= 15.0 else 0
 
         ab = airport_buckets.setdefault(
             origin,
-            {"count": 0, "dests": set(), "dist_sum": 0.0, "elap_sum": 0.0, "peak_sum": 0, "delay_sum": 0.0, "delayed_cnt": 0},
+            {"count": 0, "dests": set(), "dist_sum": 0.0, "elap_sum": 0.0, "peak_sum": 0, "delay_sum": 0.0, "delayed_cnt": 0, "observed": 0},
         )
         ab["count"] += 1
         ab["dests"].add(dest)
         ab["dist_sum"] += dist
         ab["elap_sum"] += elapsed
         ab["peak_sum"] += is_peak
+        ab["observed"] += int(observed)
         ab["delay_sum"] += delay
         ab["delayed_cnt"] += is_delayed
 
         route_code = f"{origin} → {dest}"
         rb = route_buckets.setdefault(
             route_code,
-            {"origin": origin, "dest": dest, "count": 0, "dist_sum": 0.0, "elap_sum": 0.0, "peak_sum": 0, "delay_sum": 0.0, "delayed_cnt": 0},
+            {"origin": origin, "dest": dest, "count": 0, "dist_sum": 0.0, "elap_sum": 0.0, "peak_sum": 0, "delay_sum": 0.0, "delayed_cnt": 0, "observed": 0},
         )
         rb["count"] += 1
         rb["dist_sum"] += dist
         rb["elap_sum"] += elapsed
         rb["peak_sum"] += is_peak
+        rb["observed"] += int(observed)
         rb["delay_sum"] += delay
         rb["delayed_cnt"] += is_delayed
 
@@ -284,8 +297,8 @@ def aggregate_features(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]]
             "avg_distance": round(b["dist_sum"] / cnt, 1),
             "avg_elapsed_time": round(b["elap_sum"] / cnt, 1),
             "peak_hour_ratio": round(b["peak_sum"] / cnt * 100.0, 1),
-            "avg_delay_minutes": round(b["delay_sum"] / cnt, 1),
-            "delay_rate_pct": round(b["delayed_cnt"] / cnt * 100.0, 1),
+            "avg_delay_minutes": round(b["delay_sum"] / max(b["observed"], 1), 1),
+            "delay_rate_pct": round(b["delayed_cnt"] / max(b["observed"], 1) * 100.0, 1),
         })
 
     sorted_routes = sorted(route_buckets.items(), key=lambda kv: kv[1]["count"], reverse=True)[:120]
@@ -304,8 +317,8 @@ def aggregate_features(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]]
             "avg_distance": round(b["dist_sum"] / cnt, 1),
             "avg_elapsed_time": round(b["elap_sum"] / cnt, 1),
             "peak_hour_ratio": round(b["peak_sum"] / cnt * 100.0, 1),
-            "avg_delay_minutes": round(b["delay_sum"] / cnt, 1),
-            "delay_rate_pct": round(b["delayed_cnt"] / cnt * 100.0, 1),
+            "avg_delay_minutes": round(b["delay_sum"] / max(b["observed"], 1), 1),
+            "delay_rate_pct": round(b["delayed_cnt"] / max(b["observed"], 1) * 100.0, 1),
         })
 
     return airport_entities, route_entities

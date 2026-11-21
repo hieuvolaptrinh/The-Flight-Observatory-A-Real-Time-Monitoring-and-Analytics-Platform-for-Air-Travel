@@ -353,7 +353,7 @@ export function FlightsView({
             <p>
               {dataLayer === "raw"
                 ? "Lịch sử các lần lấy AirLabs; bộ lọc chuyến bay phía trên chỉ áp dụng cho chế độ đã xử lý"
-                : "Dữ liệu AirLabs đã chuẩn hóa và cập nhật; delay chưa biết được hiển thị riêng"}
+                : "Danh sách chuyến đã lưu · Độ trễ tính theo giờ khởi hành thực tế"}
             </p>
           </div>
           <div className="table-tools">
