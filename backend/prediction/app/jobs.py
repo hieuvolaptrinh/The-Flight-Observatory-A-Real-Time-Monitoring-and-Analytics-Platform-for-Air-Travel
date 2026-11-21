@@ -4,7 +4,8 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from app.pipeline import Pipeline
-from app.schemas import Job, Results
+from app.repository import PredictionRepository
+from app.schemas import Job, PipelineOutput, Results
 
 logger = logging.getLogger(__name__)
 
@@ -16,12 +17,23 @@ class JobAlreadyRunning(Exception):
 class JobRunner:
     """One runner per process; run exactly one Uvicorn worker per service."""
 
-    def __init__(self, service: str, pipeline: Pipeline):
+    def __init__(self, service: str, pipeline: Pipeline, repository: PredictionRepository | None = None):
         self.service = service
         self.pipeline = pipeline
+        self.repository = repository
+        self.storage = "postgresql" if repository is not None else "memory"
         self.latest: Job | None = None
-        self.results = Results(service=service)
+        self.results = Results(service=service, storage=self.storage,
+                               output=PipelineOutput(metadata={"reason": "results_missing"}))
         self._lock = asyncio.Lock()
+
+    async def get_results(self) -> Results:
+        if self.repository is None:
+            return self.results
+        result = await asyncio.to_thread(self.repository.latest, self.service)
+        if result is not None:
+            return result
+        return Results(service=self.service, storage=self.storage, output=self.results.output)
 
     async def run_once(self, trigger: str = "manual") -> Job:
         if self._lock.locked():
@@ -36,11 +48,13 @@ class JobRunner:
             try:
                 output = await self.pipeline.run()
                 finished_at = datetime.now(timezone.utc)
-                # Publish only a complete result; preserve the last good result on failure.
-                self.results = Results(
-                    service=self.service, ready=bool(output.metadata.get("ready", True)),
-                    updated_at=finished_at, output=output,
-                )
+                ready = bool(output.metadata.get("ready", True))
+                if self.repository is not None and ready:
+                    await asyncio.to_thread(self.repository.save, job.id, finished_at, output)
+                    output = PipelineOutput(metadata={"reason": "results_missing"})
+                self.results = Results(service=self.service, storage=self.storage,
+                                       ready=ready and self.repository is None,
+                                       updated_at=finished_at, output=output)
                 job.status = "completed"
             except NotImplementedError as exc:
                 job.status = "not_implemented"
@@ -56,14 +70,14 @@ class JobRunner:
                 logger.info("Job finished: service=%s id=%s status=%s", self.service, job.id, job.status)
             return job
 
-    async def schedule(self, interval_seconds: float, run_on_startup: bool = False) -> None:
+    async def schedule(self, interval_seconds: float, run_on_startup: bool = False, *, repeat: bool = True) -> None:
         if run_on_startup:
             try:
                 await self.run_once(trigger="startup")
             except Exception as exc:
                 logger.warning("Startup prediction run failed: %s", exc)
 
-        while True:
+        while repeat:
             await asyncio.sleep(interval_seconds)
             try:
                 await self.run_once(trigger="schedule")

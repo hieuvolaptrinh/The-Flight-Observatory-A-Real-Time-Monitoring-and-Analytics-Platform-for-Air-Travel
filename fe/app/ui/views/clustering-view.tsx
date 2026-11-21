@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo } from "react";
 import {
   CLUSTER_COLORS,
   ClusterAssignment,
@@ -30,7 +30,13 @@ export function ClusteringView({
   setSelectedClusterId,
   centroids,
 }: ClusteringViewProps) {
-  const [currentPage, setCurrentPage] = useState(1);
+  const [pageState, setPageState] = useState({ key: "", page: 1 });
+  const pageKey = `${clusterEntityType}/${selectedClusterId}/${clusterAssignments.length}`;
+  const currentPage = pageState.key === pageKey ? pageState.page : 1;
+  function setCurrentPage(value: number | ((page: number) => number)) {
+    setPageState(previous => ({ key: pageKey,
+      page: typeof value === "function" ? value(previous.key === pageKey ? previous.page : 1) : value }));
+  }
   const pageSize = 12;
 
   const entities = clusterAssignments.filter(item => item.entity_type === clusterEntityType);
@@ -39,11 +45,6 @@ export function ClusteringView({
       a => a.entity_type === clusterEntityType && (selectedClusterId === null || a.cluster_id === selectedClusterId)
     );
   }, [clusterAssignments, clusterEntityType, selectedClusterId]);
-
-  // Reset to first page when entity type, cluster filter, or data length changes
-  useEffect(() => {
-    setCurrentPage(1);
-  }, [selectedClusterId, clusterEntityType, clusterAssignments.length]);
 
   const totalFilteredCount = filteredAssignments.length;
   const totalPages = Math.max(1, Math.ceil(totalFilteredCount / pageSize));

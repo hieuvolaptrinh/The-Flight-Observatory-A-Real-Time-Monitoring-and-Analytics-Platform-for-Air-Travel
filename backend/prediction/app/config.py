@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     root_path: str = ""
     scheduler_enabled: bool = True
     run_on_startup: bool = True
+    saved_schedule_clock: bool = False
     job_interval_seconds: float = Field(default=300, gt=0, allow_inf_nan=False)
     database_url: str = Field(default_factory=lambda: os.getenv("DATABASE_URL") or _DEFAULT_DB)
     source_database_url: str = Field(

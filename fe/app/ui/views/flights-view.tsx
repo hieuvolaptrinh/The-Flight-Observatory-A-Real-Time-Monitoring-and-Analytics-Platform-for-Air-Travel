@@ -42,7 +42,6 @@ interface FlightsViewProps {
   mapFlights: FlightItem[];
   selectedFlightKey: string | null;
   setSelectedFlightKey: (updater: string | null | ((prev: string | null) => string | null)) => void;
-  airport: string;
   setAirport: (updater: string | ((prev: string) => string)) => void;
   autoPollEnabled: boolean;
   setAutoPollEnabled: (updater: boolean | ((prev: boolean) => boolean)) => void;
@@ -105,7 +104,6 @@ export function FlightsView({
   mapFlights,
   selectedFlightKey,
   setSelectedFlightKey,
-  airport,
   setAirport,
   autoPollEnabled,
   setAutoPollEnabled,

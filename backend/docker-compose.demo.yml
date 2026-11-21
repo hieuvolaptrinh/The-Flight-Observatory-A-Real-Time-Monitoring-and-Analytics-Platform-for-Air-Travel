@@ -1,0 +1,39 @@
+name: flight-delay-demo
+
+services:
+  postgres:
+    ports: !reset []
+  gateway:
+    ports: !override
+      - "127.0.0.1:12002:8080"
+    environment:
+      FRONTEND_ORIGIN: http://localhost:13000
+  frontend:
+    ports: !override
+      - "127.0.0.1:13000:3000"
+  ingestion:
+    ports: !reset []
+    environment:
+      SCHEDULER_ENABLED: "false"
+      RUN_ON_STARTUP: "false"
+      AIRLABS_API_KEY: ""
+      AIRLABS_ACCOUNTS: ""
+      OPENWEATHER_API_KEY: ""
+  analytics:
+    ports: !reset []
+    env_file: !reset []
+    environment:
+      SCHEDULER_ENABLED: "false"
+      GEMINI_API_KEY: ""
+      FORECAST_SNAPSHOT_ONLY: "true"
+  clustering:
+    ports: !reset []
+    environment:
+      SCHEDULER_ENABLED: "false"
+      RUN_ON_STARTUP: "false"
+  prediction:
+    ports: !reset []
+    environment:
+      SCHEDULER_ENABLED: "false"
+      RUN_ON_STARTUP: "false"
+      SAVED_SCHEDULE_CLOCK: "true"

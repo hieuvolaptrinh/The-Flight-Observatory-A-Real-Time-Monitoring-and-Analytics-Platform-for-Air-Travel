@@ -6,7 +6,7 @@ import { apiRequest } from "../api-client";
 
 type ForecastScope = { airports: string[]; timezone: string };
 
-type Forecast =
+type Forecast = { snapshot_only?: boolean } & (
   | { ready: false; forecast_date: string; scope: ForecastScope; observed_days: number; required_days: number }
   | {
     ready: true;
@@ -20,7 +20,7 @@ type Forecast =
       observed_days: number;
       provisional: boolean;
     };
-  };
+  });
 
 async function requestForecast(method: "GET" | "POST", signal: AbortSignal): Promise<Forecast> {
   return apiRequest<Forecast>("/analytics/forecast", { method, signal });
@@ -59,7 +59,7 @@ export function ScheduleForecast() {
 
   return (
     <section className="analytics-panel schedule-forecast" aria-label="Dự báo lưu lượng ngày kế tiếp">
-      <h2>Dự báo lưu lượng ngày mai</h2>
+      <h2>{forecast?.snapshot_only ? "Dự báo lưu lượng đã lưu" : "Dự báo lưu lượng ngày mai"}</h2>
       {scope && <p>Chuyến khởi hành từ {scope.airports.join(", ")} trong phạm vi lịch bay đã thu thập. Múi giờ {scope.timezone}.</p>}
       {forecast?.ready && forecast.payload.provisional && (
         <p><strong>Dự báo sơ bộ</strong> · Dựa trên {forecast.payload.observed_days} ngày có dữ liệu.</p>
@@ -81,16 +81,17 @@ export function ScheduleForecast() {
       {error && <p role="alert">Không lấy được dự báo. {error}</p>}
       {forecast && !forecast.ready && (
         <p role="status">
-          Chưa có dự báo cho ngày {forecast.forecast_date}.
-          {needsHistory && ` Đã có ${forecast.observed_days}/${forecast.required_days} ngày dữ liệu cần thiết.`}
+          {forecast.snapshot_only ? "Chưa có dự báo lưu lượng trong bản sao demo."
+            : `Chưa có dự báo cho ngày ${forecast.forecast_date}.`}
+          {!forecast.snapshot_only && needsHistory && ` Đã có ${forecast.observed_days}/${forecast.required_days} ngày dữ liệu cần thiết.`}
         </p>
       )}
       <div className="analytics-controls">
         <button type="button" disabled={pending} onClick={() => setRequest({ method: "GET" })}>Tải lại</button>
-        <button type="button" disabled={pending || forecast?.ready === true || needsHistory}
+        {!forecast?.snapshot_only && <button type="button" disabled={pending || forecast?.ready === true || needsHistory}
           onClick={() => setRequest({ method: "POST" })}>
           Tạo dự báo
-        </button>
+        </button>}
       </div>
     </section>
   );

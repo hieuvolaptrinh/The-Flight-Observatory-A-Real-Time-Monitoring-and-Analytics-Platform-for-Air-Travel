@@ -75,6 +75,7 @@ export function useFlightObservatory(view: ViewMode) {
   // Machine Learning delay prediction state (Prediction Service - STT 12 & 13)
   const [mlPredictions, setMlPredictions] = useState<PredictionItem[] | null>(null);
   const [predictionMeta, setPredictionMeta] = useState<Record<string, unknown> | null>(null);
+  const [tomorrowOnly, setTomorrowOnly] = useState(false);
   const filterKey = JSON.stringify([airport, destAirport, carrier, flightStatus, debouncedSearch, sort, pageSize, selectedClusterId]);
   const currentPage = pageState.key === filterKey ? pageState.page : 1;
   const setCurrentPage = useCallback((value: number | ((page: number) => number)) => {
@@ -316,6 +317,7 @@ export function useFlightObservatory(view: ViewMode) {
 
   const scoped = predictions.filter(
     p => (airport === "all" || p.origin === airport) && (carrier === "all" || p.carrier === carrier)
+      && (!tomorrowOnly || p.is_tomorrow === true)
   );
   const filteredPredictions = scoped
     .filter(
@@ -534,6 +536,8 @@ export function useFlightObservatory(view: ViewMode) {
     // Prediction ML state
     predictionMeta,
     mlPredictions,
+    tomorrowOnly,
+    setTomorrowOnly,
 
     // Derived datasets
     carriers,

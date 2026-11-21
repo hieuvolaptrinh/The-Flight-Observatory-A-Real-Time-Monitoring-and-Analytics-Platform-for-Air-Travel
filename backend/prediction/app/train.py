@@ -302,9 +302,13 @@ def train_and_save_model(settings: Settings | None = None) -> dict[str, Any]:
     acc = float(accuracy_score(y_cls_test, y_cls_pred))
     f1 = float(f1_score(y_cls_test, y_cls_pred, zero_division=0))
     roc_auc = float(roc_auc_score(y_cls_test, y_cls_prob)) if len(np.unique(y_cls_test)) == 2 else None
+    median_delay = float(np.median(y_reg_train))
+    majority_label = int(np.bincount(y_cls_train).argmax())
+    baseline_mae = float(np.mean(np.abs(y_reg_test - median_delay)))
+    baseline_labels = np.full_like(y_cls_test, majority_label)
 
     bundle = {
-        "model_version": "prediction-schedule-v1.0" if settings.live_api_mode else "prediction-v1.0",
+        "model_version": "prediction-schedule-v1.1" if settings.live_api_mode else "prediction-v1.1",
         "input_profile": "schedule_only" if settings.live_api_mode else "schedule_and_weather",
         "trained_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "training_samples": len(X),
@@ -324,6 +328,13 @@ def train_and_save_model(settings: Settings | None = None) -> dict[str, Any]:
                 "accuracy": round(acc, 4),
                 "f1_score": round(f1, 4),
                 "roc_auc": round(roc_auc, 4) if roc_auc is not None else None,
+            },
+            "baseline": {
+                "median_delay_minutes": round(median_delay, 2),
+                "mae_minutes": round(baseline_mae, 2),
+                "majority_label": majority_label,
+                "accuracy": round(float(accuracy_score(y_cls_test, baseline_labels)), 4),
+                "f1_score": round(float(f1_score(y_cls_test, baseline_labels, zero_division=0)), 4),
             },
         },
     }

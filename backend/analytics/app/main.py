@@ -136,8 +136,12 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
         component = saved.get(grain, {"items": [], "ready": False, "seasonal_period": None})
         response = query.response(query.slice(component["items"]), grain=grain, ready=component["ready"],
                                   seasonal_period=component["seasonal_period"], summary=summary(snapshot))
-        if field == "seasonality" and not component["ready"]:
-            response["hourly_profile"] = saved.get("hourly_profile", [])
+        if field == "seasonality":
+            series = snapshot["payload"]["series"] if snapshot else []
+            response["observed_periods"] = sum(row["grain"] == grain and row["flight_count"] > 0 for row in series)
+            response["minimum_periods"] = 24 if grain == "month" else 8
+            if not component["ready"]:
+                response["hourly_profile"] = saved.get("hourly_profile", [])
         return response
 
     @app.get("/trend", tags=["charts"])

@@ -79,8 +79,9 @@ class RawStore:
                 (response_id,provider,endpoint,request_params,fetched_at,http_status,payload_json,archive_kind)
                 VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(response_id) DO NOTHING RETURNING response_id"""),
                 (response_id, provider, endpoint, json.dumps(params), fetched_at, http_status, json.dumps(payload), archive_kind)).fetchone()
-            if inserted and provider == "airlabs" and endpoint.endswith("/schedules") and isinstance(payload, dict):
-                for index, raw in enumerate(payload.get("response", []) if isinstance(payload.get("response"), list) else []):
+            if inserted and provider == "airlabs" and endpoint.endswith(("/schedules", "/historical")):
+                rows = payload.get("response") if isinstance(payload, dict) else payload
+                for index, raw in enumerate(rows if isinstance(rows, list) else []):
                     values = raw if isinstance(raw, dict) else {}
                     conn.execute(self.sql("""INSERT INTO raw_flights
                         (response_id,row_index,airline_iata,flight_number,dep_iata,arr_iata,dep_time,arr_time,raw_json)

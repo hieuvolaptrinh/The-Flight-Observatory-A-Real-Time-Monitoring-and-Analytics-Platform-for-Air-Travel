@@ -15,6 +15,10 @@ interface ForecastViewProps {
   scoped: PredictionItem[];
   predictionStatus: string;
   scheduleOnly: boolean;
+  tomorrowOnly: boolean;
+  setTomorrowOnly: (value: boolean) => void;
+  evaluatedAt?: string;
+  referenceAt?: string;
   filteredPredictions: PredictionItem[];
   forecastAvg: number;
   highCount: number;
@@ -27,6 +31,10 @@ export function ForecastView({
   scoped,
   predictionStatus,
   scheduleOnly,
+  tomorrowOnly,
+  setTomorrowOnly,
+  evaluatedAt,
+  referenceAt,
   filteredPredictions,
   forecastAvg,
   highCount,
@@ -35,7 +43,7 @@ export function ForecastView({
   setRisk,
 }: ForecastViewProps) {
   const [pageState, setPageState] = useState({ key: "", page: 1 });
-  const pageKey = risk + "/" + filteredPredictions.length;
+  const pageKey = `${risk}/${tomorrowOnly}/${filteredPredictions.length}`;
   const currentPage = pageState.key === pageKey ? pageState.page : 1;
   function setCurrentPage(value: number | ((page: number) => number)) {
     setPageState(previous => ({ key: pageKey,
@@ -68,10 +76,30 @@ export function ForecastView({
     return pages;
   }, [safePage, totalPages]);
 
+  const forecastHeader = (
+    <>
+      <ScheduleForecast />
+      {scheduleOnly && (
+        <section className="analytics-panel" aria-label="Phạm vi dự báo độ trễ">
+          <label>
+            <input type="checkbox" checked={tomorrowOnly} onChange={event => setTomorrowOnly(event.target.checked)} />
+            {" "}Chỉ xem chuyến ngày mai theo giờ sân bay khởi hành
+          </label>
+          {evaluatedAt && (
+            <p>Lần dự báo đã lưu: <time dateTime={evaluatedAt}>{new Date(evaluatedAt).toLocaleString("vi-VN")}</time></p>
+          )}
+          {referenceAt && (
+            <p>Mốc dữ liệu demo: <time dateTime={referenceAt}>{new Date(referenceAt).toLocaleString("vi-VN")}</time></p>
+          )}
+        </section>
+      )}
+    </>
+  );
+
   if (!scoped.length) {
     return (
       <>
-        <ScheduleForecast />
+        {forecastHeader}
         <section className="analytics-panel" aria-label="Dự báo độ trễ từng chuyến">
           <h2>Dự báo độ trễ từng chuyến</h2>
           <p role="status">{predictionStatus}</p>
@@ -82,12 +110,7 @@ export function ForecastView({
 
   return (
     <>
-      <ScheduleForecast />
-      {scheduleOnly && (
-        <p className="analytics-status">
-          Dự báo trễ khởi hành cho các chuyến trong 24 giờ tới, từ model huấn luyện trên lịch bay và giờ cất cánh thực tế AirLabs.
-        </p>
-      )}
+      {forecastHeader}
       <section className="metrics" aria-label="Chỉ số dự báo">
         <Metric
           title="Chuyến bay được đánh giá"
@@ -231,7 +254,7 @@ export function ForecastView({
                 <tr><td colSpan={6}>Không có chuyến bay phù hợp với mức nguy cơ đã chọn.</td></tr>
               )}
               {paginatedPredictions.map((p, idx) => (
-                <tr key={`${p.flight}-${idx}`}>
+                <tr key={p.flight_key ?? `${p.flight}-${idx}`}>
                   <td>
                     <span className={`airline-mark airline-${p.carrier}`}>{p.carrier}</span>
                     <strong>{p.flight}</strong>
@@ -243,7 +266,9 @@ export function ForecastView({
                       <strong>{p.destination}</strong>
                     </span>
                   </td>
-                  <td className="tabular">{p.time}</td>
+                  <td className="tabular" title={p.departure_timezone ?? undefined}>
+                    {p.flight_date ? `${p.flight_date} ${p.time}` : p.time}
+                  </td>
                   <td className="tabular">
                     <strong className={p.delay >= 30 ? "coral-text" : ""}>+{p.delay}</strong>
                     <span className="muted"> phút</span>
