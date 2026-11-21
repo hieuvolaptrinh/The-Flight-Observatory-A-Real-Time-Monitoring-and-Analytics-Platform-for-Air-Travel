@@ -39,7 +39,8 @@ interface EnrichedFlight {
 type FlightTimeline = Pick<EnrichedFlight, "initialProgress" | "durationSec"> & { startedAt: number };
 
 function simulatedProgress(timeline: FlightTimeline, nowSec: number) {
-  return Math.min(1, timeline.initialProgress + (nowSec - timeline.startedAt) / timeline.durationSec);
+  const elapsedProgress = (nowSec - timeline.startedAt) / timeline.durationSec;
+  return (timeline.initialProgress + elapsedProgress) % 1;
 }
 
 type MapStyleMode = "navy" | "osm-dark" | "satellite" | "osm";
@@ -491,7 +492,7 @@ export default function FlightRadarMap({
 
       const size = isSelected ? 28 : 21;
       const svgHtml = `
-        <div class="fa-plane-rotator ${isSelected ? "selected" : ""}" data-simulation-state="${progress >= 1 ? "arrived" : "flying"}" style="transform: rotate(${pos.bearing.toFixed(1)}deg); color: ${planeColor};">
+        <div class="fa-plane-rotator ${isSelected ? "selected" : ""}" style="transform: rotate(${pos.bearing.toFixed(1)}deg); color: ${planeColor};">
           <svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="currentColor" stroke="#08142c" stroke-width="1">
             <path d="M21 16v-2l-8-5V3.5c0-.83-.67-1.5-1.5-1.5S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z"/>
           </svg>
@@ -588,7 +589,6 @@ export default function FlightRadarMap({
             const rotator = el.querySelector(".fa-plane-rotator") as HTMLElement | null;
             if (rotator) {
               rotator.style.transform = `rotate(${pos.bearing.toFixed(1)}deg)`;
-              if (progress === 1) rotator.dataset.simulationState = "arrived";
             }
           }
 
@@ -668,7 +668,7 @@ export default function FlightRadarMap({
           </div>
           <p>
             Vẽ {number(enrichedFlights.length)} / {number(totalMatchedCount)} chuyến khớp bộ lọc (tối đa 300).
-            Vị trí mô phỏng theo lịch bay.
+            Vị trí mô phỏng lặp theo lịch bay.
             {flights.length > enrichedFlights.length && " Một số chuyến chưa đủ tọa độ để vẽ."}
           </p>
         </div>
@@ -784,7 +784,7 @@ export default function FlightRadarMap({
                 <small>CRS Đi: {selectedEnriched.item.crs_dep_time}</small>
               </div>
               <div className="fa-hud-plane-divider">
-                <span>{liveProgress >= 1 ? "Đã đến · mô phỏng" : `✈ ${Math.floor(liveProgress * 100)}%`}</span>
+                <span>Mô phỏng · {Math.floor(liveProgress * 100)}%</span>
                 <div className="fa-hud-progress-track">
                   <div style={{ width: `${Math.min(100, Math.max(4, liveProgress * 100))}%` }} />
                 </div>

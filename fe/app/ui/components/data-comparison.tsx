@@ -7,6 +7,7 @@ type FlightComparison = {
   raw: { raw: unknown; processing_status: string; processing_error: string | null; fetched_at: string };
   processed: Record<string, unknown> | null;
   matches_current_source: boolean;
+  departure_delay_minutes?: number | null;
   fields: { label: string; raw: unknown; processed: unknown }[];
 };
 const display = (value: unknown) => value == null ? "—" : String(value);
@@ -22,24 +23,41 @@ export function FlightDataComparison({ rawId, onClose }: { rawId: number; onClos
   }, [rawId]);
   const current = result?.id === rawId ? result : undefined;
   const data = current?.data;
+  const reason = data?.raw.processing_status === "pending"
+    ? "API đã trả dòng này và hệ thống đã lưu dữ liệu gốc. Dòng này chưa có kết quả xử lý trong đợt đã chọn."
+    : data?.raw.processing_status === "rejected"
+      ? "Dòng này bị loại trong bước kiểm tra dữ liệu."
+      : "Không tìm thấy bản đã xử lý còn lưu cho dòng này.";
+  const sourceFields = data?.fields.filter(field => field.raw != null) ?? [];
   return <section className="data-comparison panel" aria-label="So sánh dữ liệu trước và sau xử lý">
-    <div className="panel-heading"><h3>Trước và sau xử lý · Dòng thô #{rawId}</h3>
+    <div className="panel-heading"><h3>{data?.processed ? "Đối chiếu trước và sau xử lý" : "Chi tiết dòng đã thu thập"} · #{rawId}</h3>
       <button type="button" className="button secondary" onClick={onClose}>Đóng</button></div>
     {!current && <p role="status">Đang đọc hai nguồn dữ liệu…</p>}
     {current?.error && <p role="alert">{current.error}</p>}
     {data && <>
       <p>Lấy từ API lúc {new Date(data.raw.fetched_at).toLocaleString("vi-VN")}.</p>
-      {!data.processed && <p role="status">Chưa có bản đã xử lý tương ứng. {data.raw.processing_error}</p>}
+      {!data.processed && <>
+        <p role="status">{reason} {data.raw.processing_error}</p>
+        <dl className="overview-batch-counts">
+          {sourceFields.map(field => <div key={field.label}><dt>{field.label}</dt><dd>{display(field.raw)}</dd></div>)}
+        </dl>
+      </>}
       {data.processed && !data.matches_current_source && <p className="analytics-status">
         Bên trái là lần lấy dữ liệu bạn chọn; bên phải là bản đã xử lý mới nhất của cùng chuyến bay, có thể đến từ lần cập nhật khác.
       </p>}
-      <div className="table-scroll"><table><thead><tr><th>Trường</th><th>Raw từ API</th><th>Đã xử lý</th></tr></thead>
-        <tbody>{data.fields.map(field => <tr key={field.label}><th>{field.label}</th>
-          <td>{display(field.raw)}</td><td>{display(field.processed)}</td></tr>)}</tbody></table></div>
-      <p>Khoảng cách và thời lượng có thể được tính bổ sung từ tọa độ, lịch bay và múi giờ; “—” là nguồn không cung cấp.</p>
+      {data.processed && <div className="table-scroll"><table><thead><tr><th>Trường</th><th>Dữ liệu từ API</th><th>Sau xử lý</th></tr></thead>
+        <tbody>{data.fields.filter(field => field.raw != null || field.processed != null).map(field => <tr key={field.label}><th>{field.label}</th>
+          <td>{display(field.raw)}</td><td>{display(field.processed)}</td></tr>)}</tbody></table></div>}
+      {data.processed && <p>
+        {data.departure_delay_minutes == null
+          ? "Bản đã xử lý chưa có độ trễ khởi hành thực tế đủ điều kiện để tính tỷ lệ trễ."
+          : data.departure_delay_minutes >= 15
+            ? "Bản đã xử lý được tính là chuyến trễ vì chậm ít nhất 15 phút."
+            : "Bản đã xử lý được tính là chuyến đúng giờ vì chậm dưới 15 phút."}
+      </p>}
       <div className="comparison-json">
         <details><summary>Xem JSON raw đầy đủ</summary><pre>{JSON.stringify(data.raw.raw, null, 2)}</pre></details>
-        <details><summary>Xem JSON đã xử lý đầy đủ</summary><pre>{JSON.stringify(data.processed, null, 2)}</pre></details>
+        {data.processed && <details><summary>Xem JSON đã xử lý đầy đủ</summary><pre>{JSON.stringify(data.processed, null, 2)}</pre></details>}
       </div>
     </>}
   </section>;
